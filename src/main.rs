@@ -10,6 +10,7 @@ use ssh_key::{PrivateKey, MPInt};
 
 mod types;
 use types::*;
+use uuid::Uuid;
 
 struct MasterKey([u8; 32]);
 
@@ -22,7 +23,7 @@ impl MasterKey {
             kdf_iterations,
             MessageDigest::sha256(),
             &mut res
-            ).expect("Key derivation failed");
+        ).expect("Key derivation failed");
         MasterKey(res)
     }
 
@@ -36,13 +37,13 @@ impl MasterKey {
     }
 }
 
-struct CipherString {
+struct EncryptedThruple {
     iv: Vec<u8>,
     ct: Vec<u8>,
     mac: Vec<u8>,
 }
 
-impl CipherString {
+impl EncryptedThruple {
     fn from_str(thing: &str) -> Self {
         let blah = thing[2..].split("|").collect::<Vec<&str>>();
         Self {
@@ -78,13 +79,14 @@ struct BwSshKeyEntry {
 fn fetch_ssh_keys(config: &Config) -> Vec<BwSshKeyEntry> {
     let client = reqwest::blocking::Client::new();
 
+    let device_uuid = Uuid::new_v4().to_string();
     let params = HashMap::from([
         ("grant_type", "client_credentials"),
         ("scope", "api"),
         ("client_id", &config.oauth_client_id),
         ("client_secret", &config.oauth_client_secret),
-        ("device_identifier", "literal_trash"),
-        ("device_name", "literal_trash"),
+        ("device_identifier", &device_uuid),
+        ("device_name", &device_uuid),
     ]);
 
     let response = client.post(format!("{}/identity/connect/token", config.url))
@@ -92,7 +94,7 @@ fn fetch_ssh_keys(config: &Config) -> Vec<BwSshKeyEntry> {
         .send()
         .expect("Login request failed");
 
-    let login_response = response.json::<LoginResponse>().expect("Login json failed to deserialize");
+    let login_response = response.json::<BwLoginResponse>().expect("Login json failed to deserialize");
 
     let master_password = rpassword::prompt_password("Master Password: ").unwrap();
     let master_key = MasterKey::new(
@@ -103,7 +105,7 @@ fn fetch_ssh_keys(config: &Config) -> Vec<BwSshKeyEntry> {
 
     let (enc_key, mac_key) = master_key.expand();
 
-    let key_parts = CipherString::from_str(&login_response.key);
+    let key_parts = EncryptedThruple::from_str(&login_response.key);
 
     key_parts.mac_verify(&mac_key);
 
@@ -117,10 +119,10 @@ fn fetch_ssh_keys(config: &Config) -> Vec<BwSshKeyEntry> {
         .send()
         .expect("Sync request failed");
 
-    let sync_response = response.json::<SyncResponse>().expect("Sync json failed to deserialize");
+    let sync_response = response.json::<BwSyncResponse>().expect("Sync json failed to deserialize");
 
     let folder_id = sync_response.folders.into_iter().find_map(|folder| {
-        let enc_name = CipherString::from_str(&folder.name);
+        let enc_name = EncryptedThruple::from_str(&folder.name);
         enc_name.mac_verify(data_mac);
 
         if enc_name.decrypt(data_key) == b"ssh-keys" {
@@ -132,11 +134,11 @@ fn fetch_ssh_keys(config: &Config) -> Vec<BwSshKeyEntry> {
 
     sync_response.ciphers.into_iter().filter_map(|cipher| {
         let cipher = match (&cipher.t, &cipher.folder_id) {
-            (CipherType::Note, Some(fid)) if *fid == folder_id => Some(cipher),
+            (BwCipherType::Note, Some(fid)) if *fid == folder_id => Some(cipher),
             _ => None,
         }?;
 
-        let note = CipherString::from_str(&cipher.notes.unwrap());
+        let note = EncryptedThruple::from_str(&cipher.notes.unwrap());
         note.mac_verify(&data_mac);
 
         let unencrypted_ssh_key = note.decrypt(data_key);
@@ -144,12 +146,12 @@ fn fetch_ssh_keys(config: &Config) -> Vec<BwSshKeyEntry> {
         let fields = cipher.data.fields.unwrap_or(vec![]);
 
         let passphrase_field = fields.iter().find_map(|field| {
-            let enc_name = CipherString::from_str(&field.name);
+            let enc_name = EncryptedThruple::from_str(&field.name);
             enc_name.mac_verify(&data_mac);
             let field_name = enc_name.decrypt(data_key);
 
             if field_name == b"passphrase" {
-                let enc_value = CipherString::from_str(&field.value);
+                let enc_value = EncryptedThruple::from_str(&field.value);
                 enc_value.mac_verify(&data_mac);
                 Some(enc_value.decrypt(data_key))
             } else {
@@ -157,7 +159,7 @@ fn fetch_ssh_keys(config: &Config) -> Vec<BwSshKeyEntry> {
             }
         });
 
-        let name_cipher = CipherString::from_str(&cipher.name);
+        let name_cipher = EncryptedThruple::from_str(&cipher.name);
         name_cipher.mac_verify(data_mac);
         let name_bytes = name_cipher.decrypt(data_key);
         let name = std::str::from_utf8(&name_bytes).expect("Invalid UTF-8 entry name").to_owned();

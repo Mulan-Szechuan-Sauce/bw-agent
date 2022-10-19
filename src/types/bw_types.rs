@@ -1,24 +1,8 @@
-use clap::Parser;
 use serde::{Serialize, Deserialize};
 use serde_repr::{Serialize_repr, Deserialize_repr};
 
-#[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
-pub struct Args {
-   #[arg(short, long)]
-   pub config: String,
-}
-
 #[derive(Serialize, Deserialize, Debug)]
-pub struct Config {
-    pub url: String,
-    pub oauth_client_id: String,
-    pub oauth_client_secret: String,
-    pub email: String,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-pub struct LoginResponse {
+pub struct BwLoginResponse {
     #[serde(rename = "Kdf")]
     pub kdf: u32,
     #[serde(rename = "KdfIterations")]
@@ -39,14 +23,14 @@ pub struct LoginResponse {
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "PascalCase")]
-pub struct SyncResponse {
+pub struct BwSyncResponse {
     pub ciphers: Vec<BwCipher>,
-    pub folders: Vec<Folder>,
+    pub folders: Vec<BwFolder>,
 }
 
 #[derive(Serialize_repr, Deserialize_repr, Debug)]
 #[repr(u8)]
-pub enum CipherType {
+pub enum BwCipherType {
     Login = 1,
     Note = 2,
 }
@@ -55,45 +39,46 @@ pub enum CipherType {
 #[serde(rename_all = "PascalCase")]
 pub struct BwCipher {
     #[serde(rename = "Type")]
-    pub t: CipherType,
-    pub login: Option<Login>,
+    pub t: BwCipherType,
+    // pub login: Option<BwLogin>,
     pub notes: Option<String>,
-    pub data: Data,
+    pub data: BwCipherData,
     pub name: String,
     pub folder_id: Option<String>,
 }
 
 #[derive(Serialize_repr, Deserialize_repr, Debug)]
 #[repr(u8)]
-pub enum FieldType {
+pub enum BwFieldType {
     Something = 1,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "PascalCase")]
-pub struct Data {
-    pub fields: Option<Vec<Field>>,
+pub struct BwCipherData {
+    pub fields: Option<Vec<BwCipherField>>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "PascalCase")]
-pub struct Field {
+pub struct BwCipherField {
     #[serde(rename = "Type")]
-    t: FieldType,
+    t: BwFieldType,
     pub name: String,
     pub value: String,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
-#[serde(rename_all = "PascalCase")]
-pub struct Login {
-    pub username: String,
-    pub password: String,
-}
+// #[derive(Serialize, Deserialize, Debug)]
+// #[serde(rename_all = "PascalCase")]
+// pub struct BwLogin {
+//     pub username: String,
+//     pub password: String,
+// }
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "PascalCase")]
-pub struct Folder {
+pub struct BwFolder {
     pub id: String,
     pub name: String,
 }
+
