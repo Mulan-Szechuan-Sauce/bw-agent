@@ -184,16 +184,18 @@ fn send_keys_to_agent(keys: Vec<BwSshKeyEntry>) {
 
     for key in keys {
         let mut message = BytesMut::new();
-        message.put_bytes(17u8, 1);
+        message.put_bytes(SshMessageType::AddIdentity as u8, 1);
 
-        let msg_type = b"ssh-rsa";
-        message.put_u32(usize::try_into(msg_type.len()).unwrap());
-        message.put_slice(msg_type);
+        message.put_u32(usize::try_into(SSH_RSA_KEY_TYPE.len()).unwrap());
+        message.put_slice(SSH_RSA_KEY_TYPE);
 
         let pk = PrivateKey::from_openssh(&key.key).unwrap();
         let pk = if pk.is_encrypted() { 
             // TODO: Prompt for user input of key passphrase
-            pk.decrypt(key.passphrase.expect("Git rekt")).expect("Invalid password")
+            let passphrase = key.passphrase.unwrap_or_else(||
+                rpassword::prompt_password(format!("Key '{}' Password: ", key.name)).unwrap().into_bytes()
+            );
+            pk.decrypt(passphrase).expect("Invalid password")
         } else {
             pk
         };

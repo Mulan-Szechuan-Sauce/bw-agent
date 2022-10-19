@@ -6,3 +6,6 @@ pub use config::*;
 
 mod bw_types;
 pub use bw_types::*;
+
+mod ssh_agent_types;
+pub use ssh_agent_types::*;
