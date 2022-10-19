@@ -41,6 +41,7 @@ pub struct LoginResponse {
 #[serde(rename_all = "PascalCase")]
 pub struct SyncResponse {
     pub ciphers: Vec<BwCipher>,
+    pub folders: Vec<Folder>,
 }
 
 #[derive(Serialize_repr, Deserialize_repr, Debug)]
@@ -59,6 +60,7 @@ pub struct BwCipher {
     pub notes: Option<String>,
     pub data: Data,
     pub name: String,
+    pub folder_id: Option<String>,
 }
 
 #[derive(Serialize_repr, Deserialize_repr, Debug)]
@@ -87,4 +89,11 @@ pub struct Field {
 pub struct Login {
     pub username: String,
     pub password: String,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "PascalCase")]
+pub struct Folder {
+    pub id: String,
+    pub name: String,
 }

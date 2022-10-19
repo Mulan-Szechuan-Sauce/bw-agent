@@ -119,9 +119,20 @@ fn fetch_ssh_keys(config: &Config) -> Vec<BwSshKeyEntry> {
 
     let sync_response = response.json::<SyncResponse>().expect("Sync json failed to deserialize");
 
+    let folder_id = sync_response.folders.into_iter().find_map(|folder| {
+        let enc_name = CipherString::from_str(&folder.name);
+        enc_name.mac_verify(data_mac);
+
+        if enc_name.decrypt(data_key) == b"ssh-keys" {
+            Some(folder.id)
+        } else {
+            None
+        }
+    }).expect("ssh-keys folder does not exist");
+
     sync_response.ciphers.into_iter().filter_map(|cipher| {
-        let cipher = match cipher.t {
-            CipherType::Note => Some(cipher),
+        let cipher = match (&cipher.t, &cipher.folder_id) {
+            (CipherType::Note, Some(fid)) if *fid == folder_id => Some(cipher),
             _ => None,
         }?;
 
