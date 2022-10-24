@@ -3,6 +3,7 @@ use std::{collections::HashMap, os::unix::net::UnixStream, io::{Write, Read}, ne
 use byteorder::{BigEndian, ByteOrder};
 use bytes::{BytesMut, BufMut};
 use clap::Parser;
+use clap_serde_derive::ClapSerde;
 use hmac::{Hmac, Mac};
 use openssl::{symm::Cipher, hash::MessageDigest};
 use sha2::Sha256;
@@ -76,9 +77,9 @@ struct BwSshKeyEntry {
     name: String,
 }
 
-fn fetch_ssh_keys(args: &Args, config: &Config) -> Vec<BwSshKeyEntry> {
+fn fetch_ssh_keys(config: &Config) -> Vec<BwSshKeyEntry> {
     let client = reqwest::blocking::Client::builder()
-                                    .danger_accept_invalid_certs(args.ignore_untrusted_cert)
+                                    .danger_accept_invalid_certs(config.ignore_untrusted_cert)
                                     .build()
                                     .unwrap();
 
@@ -234,12 +235,14 @@ fn send_keys_to_agent(keys: Vec<BwSshKeyEntry>) {
 }
 
 fn main() {
-    let args = Args::parse();
+    let mut cli_args = Args::parse();
 
-    let config_string = std::fs::read_to_string(&args.config).expect("Config file not found");
-    let config = serde_yaml::from_str::<Config>(&config_string).expect("Config file failed to deserialize");
+    let config = match std::fs::read_to_string(&cli_args.config) {
+        Ok(x) => Config::from(serde_yaml::from_str::<<Config as ClapSerde>::Opt>(&x).unwrap()).merge(&mut cli_args.user_config),
+        Err(_) => Config::from(&mut cli_args.user_config)
+    };
 
-    let bw_ssh_keys = fetch_ssh_keys(&args, &config);
+    let bw_ssh_keys = fetch_ssh_keys(&config);
     send_keys_to_agent(bw_ssh_keys);
 
     println!("Successfully added keys.");
