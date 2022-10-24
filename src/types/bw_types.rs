@@ -33,6 +33,7 @@ pub struct BwSyncResponse {
 pub enum BwCipherType {
     Login = 1,
     Note = 2,
+    Card = 3,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -50,7 +51,8 @@ pub struct BwCipher {
 #[derive(Serialize_repr, Deserialize_repr, Debug)]
 #[repr(u8)]
 pub enum BwFieldType {
-    Something = 1,
+    Text = 0,
+    Hidden = 1,
 }
 
 #[derive(Serialize, Deserialize, Debug)]

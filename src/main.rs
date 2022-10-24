@@ -76,8 +76,11 @@ struct BwSshKeyEntry {
     name: String,
 }
 
-fn fetch_ssh_keys(config: &Config) -> Vec<BwSshKeyEntry> {
-    let client = reqwest::blocking::Client::new();
+fn fetch_ssh_keys(additional_flags: &AdditionalFlags, config: &Config) -> Vec<BwSshKeyEntry> {
+    let client = reqwest::blocking::Client::builder()
+                                    .danger_accept_invalid_certs(additional_flags.ignore_untrusted_cert)
+                                    .build()
+                                    .unwrap();
 
     let device_uuid = Uuid::new_v4().to_string();
     let params = HashMap::from([
@@ -236,7 +239,11 @@ fn main() {
     let config_string = std::fs::read_to_string(args.config).expect("Config file not found");
     let config = serde_yaml::from_str::<Config>(&config_string).expect("Config file failed to deserialize");
 
-    let bw_ssh_keys = fetch_ssh_keys(&config);
+    let additional_flags = AdditionalFlags {
+        ignore_untrusted_cert: args.ignore_untrusted_cert,
+    };
+
+    let bw_ssh_keys = fetch_ssh_keys(&additional_flags, &config);
     send_keys_to_agent(bw_ssh_keys);
 
     println!("Successfully added keys.");

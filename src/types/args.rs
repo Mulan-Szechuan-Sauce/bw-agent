@@ -5,5 +5,6 @@ use clap::Parser;
 pub struct Args {
    #[arg(short, long)]
    pub config: String,
+   #[arg(long)]
+   pub ignore_untrusted_cert: bool,
 }
-

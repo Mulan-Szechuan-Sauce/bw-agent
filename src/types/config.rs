@@ -8,4 +8,6 @@ pub struct Config {
     pub email: String,
 }
 
-
+pub struct AdditionalFlags {
+    pub ignore_untrusted_cert: bool,
+}
