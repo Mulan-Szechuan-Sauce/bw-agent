@@ -5,7 +5,7 @@ use clap_serde_derive::{
 
 #[derive(ClapSerde, Debug)]
 pub struct Config {
-    #[clap(long, action = ArgAction::SetTrue)]
+    #[clap(long)]
     pub ignore_untrusted_cert: bool,
     #[clap(long)]
     pub url: String,
