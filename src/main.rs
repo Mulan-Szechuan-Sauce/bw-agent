@@ -76,9 +76,9 @@ struct BwSshKeyEntry {
     name: String,
 }
 
-fn fetch_ssh_keys(additional_flags: &AdditionalFlags, config: &Config) -> Vec<BwSshKeyEntry> {
+fn fetch_ssh_keys(args: &Args, config: &Config) -> Vec<BwSshKeyEntry> {
     let client = reqwest::blocking::Client::builder()
-                                    .danger_accept_invalid_certs(additional_flags.ignore_untrusted_cert)
+                                    .danger_accept_invalid_certs(args.ignore_untrusted_cert)
                                     .build()
                                     .unwrap();
 
@@ -236,14 +236,10 @@ fn send_keys_to_agent(keys: Vec<BwSshKeyEntry>) {
 fn main() {
     let args = Args::parse();
 
-    let config_string = std::fs::read_to_string(args.config).expect("Config file not found");
+    let config_string = std::fs::read_to_string(&args.config).expect("Config file not found");
     let config = serde_yaml::from_str::<Config>(&config_string).expect("Config file failed to deserialize");
 
-    let additional_flags = AdditionalFlags {
-        ignore_untrusted_cert: args.ignore_untrusted_cert,
-    };
-
-    let bw_ssh_keys = fetch_ssh_keys(&additional_flags, &config);
+    let bw_ssh_keys = fetch_ssh_keys(&args, &config);
     send_keys_to_agent(bw_ssh_keys);
 
     println!("Successfully added keys.");

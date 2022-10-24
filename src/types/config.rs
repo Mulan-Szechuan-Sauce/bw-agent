@@ -7,7 +7,3 @@ pub struct Config {
     pub oauth_client_secret: String,
     pub email: String,
 }
-
-pub struct AdditionalFlags {
-    pub ignore_untrusted_cert: bool,
-}
