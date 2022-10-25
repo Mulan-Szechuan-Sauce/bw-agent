@@ -5,7 +5,7 @@ use bytes::{BytesMut, BufMut};
 use clap::Parser;
 use clap_serde_derive::ClapSerde;
 use hmac::{Hmac, Mac};
-use openssl::{symm::Cipher, hash::MessageDigest};
+use openssl::{symm::Cipher, hash::MessageDigest, pkcs5::pbkdf2_hmac};
 use sha2::Sha256;
 use ssh_key::{PrivateKey, MPInt};
 
@@ -77,7 +77,7 @@ struct BwSshKeyEntry {
     name: String,
 }
 
-fn fetch_ssh_keys(config: &Config) -> Vec<BwSshKeyEntry> {
+fn oath_login(config: &Config) -> BwLoginResponse {
     let client = reqwest::blocking::Client::builder()
                                     .danger_accept_invalid_certs(config.ignore_untrusted_cert)
                                     .build()
@@ -87,8 +87,8 @@ fn fetch_ssh_keys(config: &Config) -> Vec<BwSshKeyEntry> {
     let params = HashMap::from([
         ("grant_type", "client_credentials"),
         ("scope", "api"),
-        ("client_id", &config.oauth_client_id),
-        ("client_secret", &config.oauth_client_secret),
+        ("client_id", config.oauth_client_id.as_ref().unwrap()),
+        ("client_secret", config.oauth_client_secret.as_ref().unwrap()),
         ("device_identifier", &device_uuid),
         ("device_name", &device_uuid),
     ]);
@@ -98,9 +98,16 @@ fn fetch_ssh_keys(config: &Config) -> Vec<BwSshKeyEntry> {
         .send()
         .expect("Login request failed");
 
-    let login_response = response.json::<BwLoginResponse>().expect("Login json failed to deserialize");
+    response.json::<BwLoginResponse>().expect("Login json failed to deserialize")
+}
 
-    let master_password = rpassword::prompt_password("Master Password: ").unwrap();
+
+fn fetch_ssh_keys(config: &Config, master_password: &str, login_response: BwLoginResponse) -> Vec<BwSshKeyEntry> {
+    let client = reqwest::blocking::Client::builder()
+                                    .danger_accept_invalid_certs(config.ignore_untrusted_cert)
+                                    .build()
+                                    .unwrap();
+
     let master_key = MasterKey::new(
         config.email.as_bytes(),
         master_password.as_bytes(),
@@ -234,6 +241,59 @@ fn send_keys_to_agent(keys: Vec<BwSshKeyEntry>) {
     stream.shutdown(Shutdown::Both).expect("shutdown function failed");
 }
 
+fn password_login(config: &Config, master_password: &str) -> BwLoginResponse {
+    let client = reqwest::blocking::Client::builder()
+                                    .danger_accept_invalid_certs(config.ignore_untrusted_cert)
+                                    .build()
+                                    .unwrap();
+
+    let prelogin_params = HashMap::from([
+        ("email", &config.email),
+    ]);
+    let prelogin_response = client.post(format!("{}/api/accounts/prelogin", config.url))
+        .json(&prelogin_params)
+        .send()
+        .expect("Pre login request failed");
+
+    let prelogin = prelogin_response.json::<BwPreloginResponse>().expect("Preflight json failed to deserialize");
+
+    let master_key = MasterKey::new(
+        config.email.as_bytes(),
+        master_password.as_bytes(),
+        prelogin.kdf_iterations,
+    );
+
+    let mut hashed = [0u8; 32];
+    openssl::pkcs5::pbkdf2_hmac(
+        &master_key.0,
+        master_password.as_bytes(),
+        1,
+        MessageDigest::sha256(),
+        &mut hashed
+    ).expect("Failed to hash user master password");
+
+    let encoded = base64::encode(hashed);
+
+    let device_uuid = Uuid::new_v4().to_string();
+    let params = HashMap::from([
+        ("grant_type", "password"),
+        ("scope", "api offline_access"),
+        ("client_id", "web"),
+        ("device_identifier", &device_uuid),
+        ("device_name", &device_uuid),
+        ("device_type", "10"),
+        ("username", &config.email),
+        ("password", &encoded),
+    ]);
+
+    let response = client.post(format!("{}/identity/connect/token", config.url))
+        .form(&params)
+        .send()
+        .expect("Login request failed");
+
+    response.json::<BwLoginResponse>().expect("Login json failed to deserialize")
+}
+
 fn main() {
     let mut cli_args = Args::parse();
 
@@ -242,8 +302,15 @@ fn main() {
         Err(_) => Config::from(&mut cli_args.user_config)
     };
 
-    let bw_ssh_keys = fetch_ssh_keys(&config);
-    send_keys_to_agent(bw_ssh_keys);
+    let master_password = rpassword::prompt_password("Master Password: ").unwrap();
+    let login = if config.oauth_client_id.is_some() {
+        oath_login(&config)
+    } else {
+        password_login(&config, &master_password)
+    };
 
+    let bw_ssh_keys = fetch_ssh_keys(&config, &master_password, login);
+    send_keys_to_agent(bw_ssh_keys);
     println!("Successfully added keys.");
 }
+

@@ -23,6 +23,13 @@ pub struct BwLoginResponse {
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "PascalCase")]
+pub struct BwPreloginResponse {
+    pub kdf: u32,
+    pub kdf_iterations: usize,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "PascalCase")]
 pub struct BwSyncResponse {
     pub ciphers: Vec<BwCipher>,
     pub folders: Vec<BwFolder>,

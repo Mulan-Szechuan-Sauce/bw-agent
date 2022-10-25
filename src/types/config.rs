@@ -10,9 +10,9 @@ pub struct Config {
     #[clap(long)]
     pub url: String,
     #[clap(long)]
-    pub oauth_client_id: String,
+    pub oauth_client_id: Option<String>,
     #[clap(long)]
-    pub oauth_client_secret: String,
+    pub oauth_client_secret: Option<String>,
     #[clap(long)]
     pub email: String,
 }
