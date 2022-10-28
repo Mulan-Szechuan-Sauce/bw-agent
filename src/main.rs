@@ -4,6 +4,7 @@ use byteorder::{BigEndian, ByteOrder};
 use bytes::{BytesMut, BufMut};
 use clap::Parser;
 use clap_serde_derive::ClapSerde;
+use ctap_hid_fido2::{FidoKeyHidFactory, Cfg};
 use hmac::{Hmac, Mac};
 use openssl::{symm::Cipher, hash::MessageDigest, pkcs5::pbkdf2_hmac};
 use sha2::Sha256;
