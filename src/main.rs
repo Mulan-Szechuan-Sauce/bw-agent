@@ -1,4 +1,4 @@
-use std::{collections::HashMap, os::unix::net::UnixStream, io::{Write, Read}, net::Shutdown};
+use std::{collections::HashMap, os::unix::net::UnixStream, io::{Write, Read, stdin}, net::Shutdown};
 
 use byteorder::{BigEndian, ByteOrder};
 use bytes::{BytesMut, BufMut};
@@ -175,8 +175,8 @@ fn fetch_ssh_keys(config: &Config, master_password: &str, login_response: BwLogi
         let name_bytes = name_cipher.decrypt(data_key);
         let name = std::str::from_utf8(&name_bytes).expect("Invalid UTF-8 entry name").to_owned();
 
-        Some(BwSshKeyEntry { 
-            key: unencrypted_ssh_key, 
+        Some(BwSshKeyEntry {
+            key: unencrypted_ssh_key,
             passphrase: passphrase_field,
             name: name,
         })
@@ -201,7 +201,7 @@ fn send_keys_to_agent(keys: Vec<BwSshKeyEntry>) {
         message.put_slice(SSH_RSA_KEY_TYPE);
 
         let pk = PrivateKey::from_openssh(&key.key).unwrap();
-        let pk = if pk.is_encrypted() { 
+        let pk = if pk.is_encrypted() {
             // TODO: Prompt for user input of key passphrase
             let passphrase = key.passphrase.unwrap_or_else(||
                 rpassword::prompt_password(format!("Key '{}' Password: ", key.name)).unwrap().into_bytes()
@@ -275,21 +275,51 @@ fn password_login(config: &Config, master_password: &str) -> BwLoginResponse {
     let encoded = base64::encode(hashed);
 
     let device_uuid = Uuid::new_v4().to_string();
-    let params = HashMap::from([
-        ("grant_type", "password"),
-        ("scope", "api offline_access"),
-        ("client_id", "web"),
-        ("device_identifier", &device_uuid),
-        ("device_name", &device_uuid),
-        ("device_type", "10"),
-        ("username", &config.email),
-        ("password", &encoded),
+    let mut params = HashMap::from([
+        ("grant_type", "password".to_owned()),
+        ("scope", "api offline_access".to_owned()),
+        ("client_id", "web".to_owned()),
+        ("device_identifier", device_uuid.clone()),
+        ("device_name", device_uuid),
+        ("device_type", "10".to_owned()),
+        ("username", config.email.clone()),
+        ("password", encoded),
     ]);
 
-    let response = client.post(format!("{}/identity/connect/token", config.url))
+    let mut response = client.post(format!("{}/identity/connect/token", config.url))
         .form(&params)
         .send()
         .expect("Login request failed");
+
+    if response.status() == 400 {
+        let totp_response = response.json::<BwTwoFactorResponse>().expect("2FA json failed to deserialize");
+
+        match *totp_response.two_factor_providers.first().unwrap() {
+            // TOTP or Yubikey TOTP
+            id@(0 | 1 | 3) => {
+                let prompt = match id {
+                    0 => "TOTP",
+                    1 => "Emailed Code",
+                    3 => "Yubikey OTP",
+                    _ => unreachable!("Rust isn't smart enough to know these are the only valid cases"),
+                };
+
+                let totp = rpassword::prompt_password(format!("{}: ", prompt)).unwrap();
+                params.insert("twoFactorToken", totp);
+                params.insert("twoFactorProvider", id.to_string());
+                params.insert("twoFactorRemember", "0".to_owned()); // TODO: Don't be an old man
+            },
+            // FIDO
+            7 => {
+            },
+            _ => panic!("Unsupported 2FA type"),
+        }
+        response = client.post(format!("{}/identity/connect/token", config.url))
+            .form(&params)
+            .send()
+            .expect("Login request failed");
+
+    }
 
     response.json::<BwLoginResponse>().expect("Login json failed to deserialize")
 }

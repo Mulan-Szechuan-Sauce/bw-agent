@@ -1,3 +1,5 @@
+use std::{collections::HashMap, fmt::Display};
+
 use serde::{Serialize, Deserialize};
 use serde_repr::{Serialize_repr, Deserialize_repr};
 
@@ -91,3 +93,36 @@ pub struct BwFolder {
     pub name: String,
 }
 
+#[derive(Serialize, Deserialize, Debug)]
+pub struct BwTwoFactorResponse {
+    #[serde(rename = "TwoFactorProviders")]
+    pub two_factor_providers: Vec<u8>,
+    #[serde(rename = "TwoFactorProviders2")]
+    pub two_factor_map: HashMap<u8, Option<BwTwoFactorProvider>>,
+    pub error: String,
+    pub error_description: String,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(untagged)]
+pub enum BwTwoFactorProvider {
+    Fido {
+        #[serde(rename = "allowCredentials")]
+        allow_credentials: Vec<Thing>,
+    },
+    Yubico {
+        #[serde(rename = "Nfc")]
+        nfc: bool,
+    },
+    Email {
+        #[serde(rename = "Email")]
+        email: String,
+    },
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct Thing {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub t: String,
+}
