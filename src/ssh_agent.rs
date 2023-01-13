@@ -8,10 +8,12 @@ use openssl::sign::Signer;
 use ssh_agent_lib::agent::Agent;
 use ssh_agent_lib::proto::message::Message;
 use ssh_agent_lib::proto::{Identity, Signature};
+use ssh_key::private::RsaKeypair;
 use ssh_key::{PrivateKey, SigningKey};
+use thiserror::Error;
 
-use crate::fetch_ssh_keys;
 use crate::types::{BwLoginResponse, Config};
+use crate::{fetch_ssh_keys, BwSshKeyEntry};
 
 pub struct BwSshAgent {
     pub config: Config,
@@ -19,28 +21,55 @@ pub struct BwSshAgent {
     pub login: BwLoginResponse,
 }
 
-impl Agent for BwSshAgent {
-    type Error = ();
+#[derive(Error, Debug)]
+pub enum AgentError {
+    #[error("Key {0} is encrypted but no passphrase was provided")]
+    MissingPassphrase(String),
+    #[error("Unable to decrypt key {0} with provided passphrase: {1}")]
+    PassphraseDecrypt(String, #[source] ssh_key::Error),
+    #[error("Openssl encountered an error: {0}")]
+    Openssl(#[source] openssl::error::ErrorStack),
+    #[error("Proto encountered an error: {0}")]
+    SshAgentProto(#[source] ssh_agent_lib::proto::error::ProtoError),
+    #[error("Unspported key type: {0}")]
+    UnsupportedKey(String),
+}
 
-    fn handle(&self, message: Message) -> Result<Message, ()> {
-        let bw_ssh_keys = fetch_ssh_keys(&self.config, &self.master_password, &self.login);
+impl BwSshAgent {
+    fn handle_with_err(&self, message: Message) -> Result<Message, AgentError> {
+        let bw_ssh_keys = fetch_ssh_keys(&self.config, &self.master_password, &self.login)
+            .into_iter()
+            .filter_map(|key| match key.key.public_key().to_bytes() {
+                Ok(blob) => {
+                    let comment = key.name.clone();
+                    Some((
+                        key,
+                        Identity {
+                            pubkey_blob: blob,
+                            comment,
+                        },
+                    ))
+                }
+                Err(e) => {
+                    log::warn!("Key '{}' public key could not be loaded", e);
+                    None
+                }
+            })
+            .collect::<Vec<(BwSshKeyEntry, Identity)>>();
 
         match message {
             Message::RequestIdentities => Ok(Message::IdentitiesAnswer(
                 bw_ssh_keys
                     .iter()
-                    .map(|key| Identity {
-                        pubkey_blob: key.key.public_key().to_bytes().unwrap(),
-                        comment: key.name.clone(),
-                    })
+                    .map(|(_, identity)| identity.to_owned())
                     .collect(),
             )),
             Message::SignRequest(request) => {
-                let key = bw_ssh_keys
+                let key_identity = bw_ssh_keys
                     .iter()
-                    .find(|key| key.key.public_key().to_bytes().unwrap() == request.pubkey_blob);
+                    .find(|(_, identity)| identity.pubkey_blob == request.pubkey_blob);
 
-                if let Some(k) = key {
+                if let Some((k, identity)) = key_identity {
                     let (digest, algorithm) = if request.flags & 4 != 0 {
                         (MessageDigest::sha512(), "rsa-sha2-512")
                     } else if request.flags & 2 != 0 {
@@ -50,38 +79,40 @@ impl Agent for BwSshAgent {
                     };
 
                     // TODO: Write this nicer. Get rid of the un-needed clone
-                    let decrypted_key = if k.key.is_encrypted() {
-                        k.key
-                            .decrypt(
-                                k.passphrase
-                                    .as_ref()
-                                    .expect("Key is encrypted yet no passphrase was provided"),
-                            )
-                            .expect("Unabled to decrypt key with passphrase")
-                    } else {
-                        k.key.to_owned()
-                    };
+                    let decrypted_key =
+                        if k.key.is_encrypted() {
+                            k.key
+                                .decrypt(k.passphrase.as_ref().ok_or(
+                                    AgentError::MissingPassphrase(identity.comment.clone()),
+                                )?)
+                                .map_err(|e| {
+                                    AgentError::PassphraseDecrypt(identity.comment.clone(), e)
+                                })?
+                        } else {
+                            k.key.to_owned()
+                        };
 
                     let keypair = PKey::from_rsa(
-                        rsa_openssl_from_ssh(&decrypted_key).expect("Failed to convert key"),
+                        rsa_openssl_from_ssh(decrypted_key.key_data().rsa().ok_or(
+                            AgentError::UnsupportedKey(
+                                decrypted_key.algorithm().as_str().to_owned(),
+                            ),
+                        )?)
+                        .map_err(AgentError::Openssl)?,
                     )
-                    .expect("Failed to construct PKey");
-                    let mut signer =
-                        Signer::new(digest, &keypair).expect("Failed to create signed");
-                    signer
-                        .update(&request.data)
-                        .expect("Failed to update signer");
+                    .map_err(AgentError::Openssl)?;
+
+                    let mut signer = Signer::new(digest, &keypair).map_err(AgentError::Openssl)?;
+                    signer.update(&request.data).map_err(AgentError::Openssl)?;
 
                     let signature = Signature {
                         algorithm: algorithm.to_owned(),
-                        blob: signer
-                            .sign_to_vec()
-                            .expect("Failed to convert signed to vec"),
+                        blob: signer.sign_to_vec().map_err(AgentError::Openssl)?,
                     };
 
                     Ok(Message::SignResponse(
                         ssh_agent_lib::proto::to_bytes(&signature)
-                            .expect("Failed to convert signature to bytes"),
+                            .map_err(AgentError::SshAgentProto)?,
                     ))
                 } else {
                     Ok(Message::Failure)
@@ -97,16 +128,30 @@ impl Agent for BwSshAgent {
             }
         }
     }
+
 }
 
-fn rsa_openssl_from_ssh(private_key: &PrivateKey) -> Result<Rsa<Private>, Box<dyn Error>> {
-    let data = private_key.key_data().rsa().expect("Only support rsa keys");
-    let n = BigNum::from_slice(data.public.n.as_bytes())?;
-    let e = BigNum::from_slice(data.public.e.as_bytes())?;
-    let d = BigNum::from_slice(data.private.d.as_bytes())?;
-    let qi = BigNum::from_slice(data.private.iqmp.as_bytes())?;
-    let p = BigNum::from_slice(data.private.p.as_bytes())?;
-    let q = BigNum::from_slice(data.private.q.as_bytes())?;
+impl Agent for BwSshAgent {
+    type Error = ();
+
+    fn handle(&self, message: Message) -> Result<Message, ()> {
+        match self.handle_with_err(message) {
+            Ok(msg) => Ok(msg),
+            Err(e) => {
+                log::error!("{}", e);
+                Err(())
+            },
+        }
+    }
+}
+
+fn rsa_openssl_from_ssh(rsa: &RsaKeypair) -> Result<Rsa<Private>, openssl::error::ErrorStack> {
+    let n = BigNum::from_slice(rsa.public.n.as_bytes())?;
+    let e = BigNum::from_slice(rsa.public.e.as_bytes())?;
+    let d = BigNum::from_slice(rsa.private.d.as_bytes())?;
+    let qi = BigNum::from_slice(rsa.private.iqmp.as_bytes())?;
+    let p = BigNum::from_slice(rsa.private.p.as_bytes())?;
+    let q = BigNum::from_slice(rsa.private.q.as_bytes())?;
     let dp = &d % &(&p - &BigNum::from_u32(1)?);
     let dq = &d % &(&q - &BigNum::from_u32(1)?);
 

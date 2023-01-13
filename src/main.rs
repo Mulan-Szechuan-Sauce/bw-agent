@@ -308,6 +308,8 @@ fn password_login(config: &Config, master_password: &str) -> BwLoginResponse {
 }
 
 fn main() {
+    env_logger::init();
+
     let mut cli_args = Args::parse();
 
     let config = match std::fs::read_to_string(&cli_args.config) {
@@ -328,8 +330,13 @@ fn main() {
         master_password,
         login,
     };
-    let socket = "connect.sock";
-    let _ = std::fs::remove_file(socket);
 
-    agent.run_unix(socket).expect("Failed to run socket");
+    let mut path = std::env::current_dir().expect("Not in a working directory");
+    path.push("connect.sock");
+    let _ = std::fs::remove_file(path.clone());
+
+    println!("SSH_AUTH_SOCK={}; export SSH_AUTH_SOCK;", path.to_str().expect("Path is not valid utf8"));
+
+    log::info!("Starting socket");
+    agent.run_unix(path).expect("Failed to run socket");
 }

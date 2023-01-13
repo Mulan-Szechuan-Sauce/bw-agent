@@ -25,3 +25,6 @@ uuid = { version = "1.2", features = ["v4"] }
 clap-serde-derive = "0.2"
 ctap-hid-fido2 = "3.4"
 ssh-agent-lib = "0.2"
+thiserror = "1.0"
+log = "0.4"
+env_logger = "0.10"
