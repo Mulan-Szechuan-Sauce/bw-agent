@@ -17,10 +17,11 @@ base64 = "0.13"
 openssl = "0.10"
 bytes = "1.2"
 byteorder = "1.4"
-ssh-key = { version = "0.4", features = ["rsa", "encryption"] }
+ssh-key = { version = "0.5", features = ["rsa", "encryption", "alloc"] }
 clap = { version = "4.0.17", features = ["derive"] }
 serde_yaml = "0.9"
 rpassword = "7.0"
 uuid = { version = "1.2", features = ["v4"] }
 clap-serde-derive = "0.2"
 ctap-hid-fido2 = "3.4"
+ssh-agent-lib = "0.2"

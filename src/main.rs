@@ -1,18 +1,19 @@
-use std::{collections::HashMap, os::unix::net::UnixStream, io::{Write, Read, stdin}, net::Shutdown};
+use std::collections::HashMap;
 
-use byteorder::{BigEndian, ByteOrder};
-use bytes::{BytesMut, BufMut};
 use clap::Parser;
 use clap_serde_derive::ClapSerde;
-use ctap_hid_fido2::{FidoKeyHidFactory, Cfg};
 use hmac::{Hmac, Mac};
-use openssl::{symm::Cipher, hash::MessageDigest, pkcs5::pbkdf2_hmac};
+use openssl::{symm::Cipher, hash::MessageDigest};
 use sha2::Sha256;
-use ssh_key::{PrivateKey, MPInt};
+use ssh_agent_lib::Agent;
+use ssh_key::{PrivateKey, PublicKey};
 
 mod types;
 use types::*;
 use uuid::Uuid;
+
+mod ssh_agent;
+use ssh_agent::BwSshAgent;
 
 struct MasterKey([u8; 32]);
 
@@ -72,8 +73,10 @@ impl EncryptedThruple {
     }
 }
 
+#[derive(Debug)]
 struct BwSshKeyEntry {
-    key: Vec<u8>,
+    key: PrivateKey,
+    pubkey: PublicKey,
     passphrase: Option<Vec<u8>>,
     name: String,
 }
@@ -103,7 +106,7 @@ fn oath_login(config: &Config) -> BwLoginResponse {
 }
 
 
-fn fetch_ssh_keys(config: &Config, master_password: &str, login_response: BwLoginResponse) -> Vec<BwSshKeyEntry> {
+fn fetch_ssh_keys(config: &Config, master_password: &str, login_response: &BwLoginResponse) -> Vec<BwSshKeyEntry> {
     let client = reqwest::blocking::Client::builder()
                                     .danger_accept_invalid_certs(config.ignore_untrusted_cert)
                                     .build()
@@ -127,7 +130,7 @@ fn fetch_ssh_keys(config: &Config, master_password: &str, login_response: BwLogi
     let data_mac = &key[32..];
 
     let response = client.get(format!("{}/api/sync", config.url))
-        .bearer_auth(login_response.access_token)
+        .bearer_auth(login_response.access_token.clone())
         .send()
         .expect("Sync request failed");
 
@@ -157,19 +160,10 @@ fn fetch_ssh_keys(config: &Config, master_password: &str, login_response: BwLogi
 
         let fields = cipher.data.fields.unwrap_or(vec![]);
 
-        let passphrase_field = fields.iter().find_map(|field| {
-            let enc_name = EncryptedThruple::from_str(&field.name);
-            enc_name.mac_verify(&data_mac);
-            let field_name = enc_name.decrypt(data_key);
+        let passphrase_field = extract_field(data_mac, data_key, &fields, b"passphrase");
 
-            if field_name == b"passphrase" {
-                let enc_value = EncryptedThruple::from_str(&field.value);
-                enc_value.mac_verify(&data_mac);
-                Some(enc_value.decrypt(data_key))
-            } else {
-                None
-            }
-        });
+        let pubkey_bytes = extract_field(data_mac, data_key, &fields, b"pubkey").expect("Missing pubkey");
+        let pubkey = std::str::from_utf8(&pubkey_bytes).expect("Invalid UTF-8 entry name").to_owned() ;
 
         let name_cipher = EncryptedThruple::from_str(&cipher.name);
         name_cipher.mac_verify(data_mac);
@@ -177,70 +171,87 @@ fn fetch_ssh_keys(config: &Config, master_password: &str, login_response: BwLogi
         let name = std::str::from_utf8(&name_bytes).expect("Invalid UTF-8 entry name").to_owned();
 
         Some(BwSshKeyEntry {
-            key: unencrypted_ssh_key,
+            key: PrivateKey::from_openssh(unencrypted_ssh_key).expect("Failed to parse private key"),
+            pubkey: PublicKey::from_openssh(&pubkey).expect("Failed to parse public key"),
             passphrase: passphrase_field,
             name: name,
         })
     }).collect()
 }
 
-fn write_mpint(buffer: &mut BytesMut, value: &MPInt) {
-    let bytes = value.as_bytes();
-    buffer.put_u32(bytes.len() as u32);
-    buffer.put_slice(bytes);
-}
+fn extract_field(data_mac: &[u8], data_key: &[u8], fields: &Vec<BwCipherField>, field_name: &[u8]) -> Option<Vec<u8>> {
+    fields.iter().find_map(|field| {
+        let enc_name = EncryptedThruple::from_str(&field.name);
+        enc_name.mac_verify(&data_mac);
+        let name = enc_name.decrypt(data_key);
 
-fn send_keys_to_agent(keys: Vec<BwSshKeyEntry>) {
-    let sock_path = std::env::var_os("SSH_AUTH_SOCK").expect("Socket path is not set");
-    let mut stream = UnixStream::connect(sock_path).expect("Could not connect to ssh-agent socket");
-
-    for key in keys {
-        let mut message = BytesMut::new();
-        message.put_bytes(SshMessageType::AddIdentity as u8, 1);
-
-        message.put_u32(usize::try_into(SSH_RSA_KEY_TYPE.len()).unwrap());
-        message.put_slice(SSH_RSA_KEY_TYPE);
-
-        let pk = PrivateKey::from_openssh(&key.key).unwrap();
-        let pk = if pk.is_encrypted() {
-            // TODO: Prompt for user input of key passphrase
-            let passphrase = key.passphrase.unwrap_or_else(||
-                rpassword::prompt_password(format!("Key '{}' Password: ", key.name)).unwrap().into_bytes()
-            );
-            pk.decrypt(passphrase).expect("Invalid password")
+        if name == name {
+            let enc_value = EncryptedThruple::from_str(&field.value);
+            enc_value.mac_verify(&data_mac);
+            Some(enc_value.decrypt(data_key))
         } else {
-            pk
-        };
-
-        let rsa_keypair = pk.key_data().rsa().expect("Only supports RSA now");
-
-        write_mpint(&mut message, &rsa_keypair.public.n);
-        write_mpint(&mut message, &rsa_keypair.public.e);
-        write_mpint(&mut message, &rsa_keypair.private.d);
-        write_mpint(&mut message, &rsa_keypair.private.iqmp);
-        write_mpint(&mut message, &rsa_keypair.private.p);
-        write_mpint(&mut message, &rsa_keypair.private.q);
-
-        let comment = [b"BW: ", key.name.as_bytes()].concat();
-        message.put_u32(usize::try_into(comment.len()).unwrap());
-        message.put_slice(&comment);
-
-        let frozen = message.freeze();
-
-        let mut final_msg = BytesMut::new();
-        final_msg.put_u32(u32::try_from(frozen.len()).unwrap());
-        final_msg.put_slice(&frozen);
-
-        stream.write_all(&final_msg.freeze()).unwrap();
-
-        let mut size_bytes = vec![0u8; 4];
-        stream.read_exact(&mut size_bytes).unwrap();
-
-        let _size = BigEndian::read_u32(&size_bytes);
-    }
-
-    stream.shutdown(Shutdown::Both).expect("shutdown function failed");
+            None
+        }
+    })
 }
+
+// fn write_mpint(buffer: &mut BytesMut, value: &MPInt) {
+//     let bytes = value.as_bytes();
+//     buffer.put_u32(bytes.len() as u32);
+//     buffer.put_slice(bytes);
+// }
+
+// fn send_keys_to_agent(keys: Vec<BwSshKeyEntry>) {
+//     let sock_path = std::env::var_os("SSH_AUTH_SOCK").expect("Socket path is not set");
+//     let mut stream = UnixStream::connect(sock_path).expect("Could not connect to ssh-agent socket");
+//
+//     for key in keys {
+//         let mut message = BytesMut::new();
+//         message.put_bytes(SshMessageType::AddIdentity as u8, 1);
+//
+//         message.put_u32(usize::try_into(SSH_RSA_KEY_TYPE.len()).unwrap());
+//         message.put_slice(SSH_RSA_KEY_TYPE);
+//
+//         let pk = PrivateKey::from_openssh(&key.key).unwrap();
+//         let pk = if pk.is_encrypted() {
+//             // TODO: Prompt for user input of key passphrase
+//             let passphrase = key.passphrase.unwrap_or_else(||
+//                 rpassword::prompt_password(format!("Key '{}' Password: ", key.name)).unwrap().into_bytes()
+//             );
+//             pk.decrypt(passphrase).expect("Invalid password")
+//         } else {
+//             pk
+//         };
+//
+//         let rsa_keypair = pk.key_data().rsa().expect("Only supports RSA now");
+//
+//         write_mpint(&mut message, &rsa_keypair.public.n);
+//         write_mpint(&mut message, &rsa_keypair.public.e);
+//         write_mpint(&mut message, &rsa_keypair.private.d);
+//         write_mpint(&mut message, &rsa_keypair.private.iqmp);
+//         write_mpint(&mut message, &rsa_keypair.private.p);
+//         write_mpint(&mut message, &rsa_keypair.private.q);
+//
+//         let comment = [b"BW: ", key.name.as_bytes()].concat();
+//         message.put_u32(usize::try_into(comment.len()).unwrap());
+//         message.put_slice(&comment);
+//
+//         let frozen = message.freeze();
+//
+//         let mut final_msg = BytesMut::new();
+//         final_msg.put_u32(u32::try_from(frozen.len()).unwrap());
+//         final_msg.put_slice(&frozen);
+//
+//         stream.write_all(&final_msg.freeze()).unwrap();
+//
+//         let mut size_bytes = vec![0u8; 4];
+//         stream.read_exact(&mut size_bytes).unwrap();
+//
+//         let _size = BigEndian::read_u32(&size_bytes);
+//     }
+//
+//     stream.shutdown(Shutdown::Both).expect("shutdown function failed");
+// }
 
 fn password_login(config: &Config, master_password: &str) -> BwLoginResponse {
     let client = reqwest::blocking::Client::builder()
@@ -340,8 +351,19 @@ fn main() {
         password_login(&config, &master_password)
     };
 
-    let bw_ssh_keys = fetch_ssh_keys(&config, &master_password, login);
-    send_keys_to_agent(bw_ssh_keys);
-    println!("Successfully added keys.");
+    // let bw_ssh_keys = fetch_ssh_keys(&config, &master_password, login);
+
+    let agent = BwSshAgent {
+        config,
+        master_password,
+        login,
+    };
+    let socket = "connect.sock";
+    let _ = std::fs::remove_file(socket);
+
+    agent.run_unix(socket).expect("Failed to run socket");
+
+    // send_keys_to_agent(bw_ssh_keys);
+    // println!("Successfully added keys.");
 }
 
