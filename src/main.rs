@@ -1,12 +1,11 @@
 use std::collections::HashMap;
 
 use clap::Parser;
-use clap_serde_derive::ClapSerde;
 use hmac::{Hmac, Mac};
 use openssl::{hash::MessageDigest, symm::Cipher};
 use sha2::Sha256;
 use ssh_agent_lib::Agent;
-use ssh_key::{PrivateKey, PublicKey};
+use ssh_key::PrivateKey;
 
 mod types;
 use types::*;
@@ -21,8 +20,8 @@ impl MasterKey {
     fn new(email: &[u8], password: &[u8], kdf_iterations: usize) -> Self {
         let mut res = [0; 32];
         openssl::pkcs5::pbkdf2_hmac(
-            password.as_ref(),
-            email.as_ref(),
+            password,
+            email,
             kdf_iterations,
             MessageDigest::sha256(),
             &mut res,
@@ -49,7 +48,7 @@ struct EncryptedThruple {
 
 impl EncryptedThruple {
     fn from_str(thing: &str) -> Self {
-        let blah = thing[2..].split("|").collect::<Vec<&str>>();
+        let blah = thing[2..].split('|').collect::<Vec<&str>>();
         Self {
             iv: base64::decode(blah[0]).expect("iv failed to base64 decode"),
             ct: base64::decode(blah[1]).expect("ct failed to base64 decode"),
@@ -66,7 +65,7 @@ impl EncryptedThruple {
     }
 
     fn decrypt(&self, enc_key: &[u8]) -> Vec<u8> {
-        openssl::symm::decrypt(Cipher::aes_256_cbc(), &enc_key, Some(&self.iv), &self.ct)
+        openssl::symm::decrypt(Cipher::aes_256_cbc(), enc_key, Some(&self.iv), &self.ct)
             .expect("Decryption failed")
     }
 }
@@ -170,7 +169,7 @@ fn fetch_ssh_keys(
             }?;
 
             let note = EncryptedThruple::from_str(&cipher.notes.unwrap());
-            note.mac_verify(&data_mac);
+            note.mac_verify(data_mac);
 
             let unencrypted_ssh_key = note.decrypt(data_key);
 
@@ -189,7 +188,7 @@ fn fetch_ssh_keys(
                 key: PrivateKey::from_openssh(unencrypted_ssh_key)
                     .expect("Failed to parse private key"),
                 passphrase: passphrase_field,
-                name: name,
+                name,
             })
         })
         .collect()
@@ -198,17 +197,17 @@ fn fetch_ssh_keys(
 fn extract_field(
     data_mac: &[u8],
     data_key: &[u8],
-    fields: &Vec<BwCipherField>,
+    fields: &[BwCipherField],
     field_name: &[u8],
 ) -> Option<Vec<u8>> {
     fields.iter().find_map(|field| {
         let enc_name = EncryptedThruple::from_str(&field.name);
-        enc_name.mac_verify(&data_mac);
+        enc_name.mac_verify(data_mac);
         let name = enc_name.decrypt(data_key);
 
         if name == field_name {
             let enc_value = EncryptedThruple::from_str(&field.value);
-            enc_value.mac_verify(&data_mac);
+            enc_value.mac_verify(data_mac);
             Some(enc_value.decrypt(data_key))
         } else {
             None
@@ -286,7 +285,7 @@ fn password_login(config: &Config, master_password: &str) -> BwLoginResponse {
                     ),
                 };
 
-                let totp = rpassword::prompt_password(format!("{}: ", prompt)).unwrap();
+                let totp = rpassword::prompt_password(format!("{prompt}: ")).unwrap();
                 params.insert("twoFactorToken", totp);
                 params.insert("twoFactorProvider", id.to_string());
                 params.insert("twoFactorRemember", "0".to_owned()); // TODO: Don't be an old man
@@ -310,13 +309,10 @@ fn password_login(config: &Config, master_password: &str) -> BwLoginResponse {
 fn main() {
     env_logger::init();
 
-    let mut cli_args = Args::parse();
+    let args = Args::parse();
 
-    let config = match std::fs::read_to_string(&cli_args.config) {
-        Ok(x) => Config::from(serde_yaml::from_str::<<Config as ClapSerde>::Opt>(&x).unwrap())
-            .merge(&mut cli_args.user_config),
-        Err(_) => Config::from(&mut cli_args.user_config),
-    };
+    let config_str = std::fs::read_to_string(args.config).expect("Unable to read config file");
+    let config = serde_yaml::from_str::<Config>(&config_str).expect("Invalid yaml");
 
     let master_password = rpassword::prompt_password("Master Password: ").unwrap();
     let login = if config.oauth_client_id.is_some() {

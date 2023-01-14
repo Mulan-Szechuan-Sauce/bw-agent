@@ -1,5 +1,3 @@
-use std::error::Error;
-
 use openssl::bn::BigNum;
 use openssl::hash::MessageDigest;
 use openssl::pkey::{PKey, Private};
@@ -9,7 +7,6 @@ use ssh_agent_lib::agent::Agent;
 use ssh_agent_lib::proto::message::Message;
 use ssh_agent_lib::proto::{Identity, Signature};
 use ssh_key::private::RsaKeypair;
-use ssh_key::{PrivateKey, SigningKey};
 use thiserror::Error;
 
 use crate::types::{BwLoginResponse, Config};
@@ -128,7 +125,6 @@ impl BwSshAgent {
             }
         }
     }
-
 }
 
 impl Agent for BwSshAgent {
@@ -140,7 +136,7 @@ impl Agent for BwSshAgent {
             Err(e) => {
                 log::error!("{}", e);
                 Err(())
-            },
+            }
         }
     }
 }
@@ -155,5 +151,5 @@ fn rsa_openssl_from_ssh(rsa: &RsaKeypair) -> Result<Rsa<Private>, openssl::error
     let dp = &d % &(&p - &BigNum::from_u32(1)?);
     let dq = &d % &(&q - &BigNum::from_u32(1)?);
 
-    Ok(Rsa::from_private_components(n, e, d, p, q, dp, dq, qi)?)
+    Rsa::from_private_components(n, e, d, p, q, dp, dq, qi)
 }
