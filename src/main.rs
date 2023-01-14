@@ -1,74 +1,19 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, str::FromStr};
 
 use clap::Parser;
-use hmac::{Hmac, Mac};
-use openssl::{hash::MessageDigest, symm::Cipher};
-use sha2::Sha256;
 use ssh_agent_lib::Agent;
 use ssh_key::PrivateKey;
 
 mod types;
+use thiserror::Error;
 use types::*;
 use uuid::Uuid;
 
 mod ssh_agent;
 use ssh_agent::BwSshAgent;
 
-struct MasterKey([u8; 32]);
-
-impl MasterKey {
-    fn new(email: &[u8], password: &[u8], kdf_iterations: usize) -> Self {
-        let mut res = [0; 32];
-        openssl::pkcs5::pbkdf2_hmac(
-            password,
-            email,
-            kdf_iterations,
-            MessageDigest::sha256(),
-            &mut res,
-        )
-        .expect("Key derivation failed");
-        MasterKey(res)
-    }
-
-    fn expand(&self) -> ([u8; 32], [u8; 32]) {
-        let hkdf = hkdf::Hkdf::<Sha256>::from_prk(&self.0).unwrap();
-        let mut enc = [0; 32];
-        hkdf.expand(b"enc", &mut enc).unwrap();
-        let mut mac = [0; 32];
-        hkdf.expand(b"mac", &mut mac).unwrap();
-        (enc, mac)
-    }
-}
-
-struct EncryptedThruple {
-    iv: Vec<u8>,
-    ct: Vec<u8>,
-    mac: Vec<u8>,
-}
-
-impl EncryptedThruple {
-    fn from_str(thing: &str) -> Self {
-        let blah = thing[2..].split('|').collect::<Vec<&str>>();
-        Self {
-            iv: base64::decode(blah[0]).expect("iv failed to base64 decode"),
-            ct: base64::decode(blah[1]).expect("ct failed to base64 decode"),
-            mac: base64::decode(blah[2]).expect("ct failed to base64 decode"),
-        }
-    }
-
-    fn mac_verify(&self, mac_key: &[u8]) {
-        let mut mac_to_verify =
-            Hmac::<Sha256>::new_from_slice(mac_key).expect("HMAC can take key of any size");
-        mac_to_verify.update(&self.iv);
-        mac_to_verify.update(&self.ct);
-        mac_to_verify.verify_slice(&self.mac).unwrap();
-    }
-
-    fn decrypt(&self, enc_key: &[u8]) -> Vec<u8> {
-        openssl::symm::decrypt(Cipher::aes_256_cbc(), enc_key, Some(&self.iv), &self.ct)
-            .expect("Decryption failed")
-    }
-}
+mod crypto;
+use crypto::{EncryptedThruple, MasterKey};
 
 #[derive(Debug)]
 struct BwSshKeyEntry {
@@ -107,11 +52,20 @@ fn oath_login(config: &Config) -> BwLoginResponse {
         .expect("Login json failed to deserialize")
 }
 
+// TODO: Rename me something saner
+#[derive(Error, Debug)]
+pub enum BuisnessLogicError {
+    #[error(
+        "There was an error parsing {0} as symetrically encrypted aes_256_cbc cyphertext: {1}"
+    )]
+    ThrupleFromStr(String, #[source] base64::DecodeError),
+}
+
 fn fetch_ssh_keys(
     config: &Config,
     master_password: &str,
     login_response: &BwLoginResponse,
-) -> Vec<BwSshKeyEntry> {
+) -> Result<Vec<BwSshKeyEntry>, BuisnessLogicError> {
     let client = reqwest::blocking::Client::builder()
         .danger_accept_invalid_certs(config.ignore_untrusted_cert)
         .build()
@@ -125,7 +79,8 @@ fn fetch_ssh_keys(
 
     let (enc_key, mac_key) = master_key.expand();
 
-    let key_parts = EncryptedThruple::from_str(&login_response.key);
+    let key_parts = EncryptedThruple::from_str(&login_response.key)
+        .map_err(|e| BuisnessLogicError::ThrupleFromStr("login response key".to_owned(), e))?;
 
     key_parts.mac_verify(&mac_key);
 
@@ -148,7 +103,7 @@ fn fetch_ssh_keys(
         .folders
         .into_iter()
         .find_map(|folder| {
-            let enc_name = EncryptedThruple::from_str(&folder.name);
+            let enc_name = EncryptedThruple::from_str(&folder.name).ok()?;
             enc_name.mac_verify(data_mac);
 
             if enc_name.decrypt(data_key) == b"ssh-keys" {
@@ -159,7 +114,7 @@ fn fetch_ssh_keys(
         })
         .expect("ssh-keys folder does not exist");
 
-    sync_response
+    Ok(sync_response
         .ciphers
         .into_iter()
         .filter_map(|cipher| {
@@ -168,7 +123,7 @@ fn fetch_ssh_keys(
                 _ => None,
             }?;
 
-            let note = EncryptedThruple::from_str(&cipher.notes.unwrap());
+            let note = EncryptedThruple::from_str(&cipher.notes.unwrap()).ok()?;
             note.mac_verify(data_mac);
 
             let unencrypted_ssh_key = note.decrypt(data_key);
@@ -177,7 +132,7 @@ fn fetch_ssh_keys(
 
             let passphrase_field = extract_field(data_mac, data_key, &fields, b"passphrase");
 
-            let name_cipher = EncryptedThruple::from_str(&cipher.name);
+            let name_cipher = EncryptedThruple::from_str(&cipher.name).ok()?;
             name_cipher.mac_verify(data_mac);
             let name_bytes = name_cipher.decrypt(data_key);
             let name = std::str::from_utf8(&name_bytes)
@@ -191,7 +146,7 @@ fn fetch_ssh_keys(
                 name,
             })
         })
-        .collect()
+        .collect())
 }
 
 fn extract_field(
@@ -201,12 +156,12 @@ fn extract_field(
     field_name: &[u8],
 ) -> Option<Vec<u8>> {
     fields.iter().find_map(|field| {
-        let enc_name = EncryptedThruple::from_str(&field.name);
+        let enc_name = EncryptedThruple::from_str(&field.name).ok()?;
         enc_name.mac_verify(data_mac);
         let name = enc_name.decrypt(data_key);
 
         if name == field_name {
-            let enc_value = EncryptedThruple::from_str(&field.value);
+            let enc_value = EncryptedThruple::from_str(&field.value).ok()?;
             enc_value.mac_verify(data_mac);
             Some(enc_value.decrypt(data_key))
         } else {
@@ -238,15 +193,9 @@ fn password_login(config: &Config, master_password: &str) -> BwLoginResponse {
         prelogin.kdf_iterations,
     );
 
-    let mut hashed = [0u8; 32];
-    openssl::pkcs5::pbkdf2_hmac(
-        &master_key.0,
-        master_password.as_bytes(),
-        1,
-        MessageDigest::sha256(),
-        &mut hashed,
-    )
-    .expect("Failed to hash user master password");
+    let hashed = master_key
+        .pbkdf2_hmac_sha256::<32>(master_password.as_bytes())
+        .expect("Failed to hash user master password");
 
     let encoded = base64::encode(hashed);
 
@@ -307,12 +256,16 @@ fn password_login(config: &Config, master_password: &str) -> BwLoginResponse {
 }
 
 fn main() {
-    env_logger::init();
-
     let args = Args::parse();
 
     let config_str = std::fs::read_to_string(args.config).expect("Unable to read config file");
     let config = serde_yaml::from_str::<Config>(&config_str).expect("Invalid yaml");
+
+    if let Some(level) = config.log_level {
+        env_logger::Builder::new().filter_level(level).init();
+    } else {
+        env_logger::init();
+    }
 
     let master_password = rpassword::prompt_password("Master Password: ").unwrap();
     let login = if config.oauth_client_id.is_some() {
@@ -331,7 +284,10 @@ fn main() {
     path.push("connect.sock");
     let _ = std::fs::remove_file(path.clone());
 
-    println!("SSH_AUTH_SOCK={}; export SSH_AUTH_SOCK;", path.to_str().expect("Path is not valid utf8"));
+    println!(
+        "SSH_AUTH_SOCK={}; export SSH_AUTH_SOCK;",
+        path.to_str().expect("Path is not valid utf8")
+    );
 
     log::info!("Starting socket");
     agent.run_unix(path).expect("Failed to run socket");

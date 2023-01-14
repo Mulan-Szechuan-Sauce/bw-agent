@@ -10,7 +10,7 @@ use ssh_key::private::RsaKeypair;
 use thiserror::Error;
 
 use crate::types::{BwLoginResponse, Config};
-use crate::{fetch_ssh_keys, BwSshKeyEntry};
+use crate::{fetch_ssh_keys, BuisnessLogicError, BwSshKeyEntry};
 
 pub struct BwSshAgent {
     pub config: Config,
@@ -30,11 +30,14 @@ pub enum AgentError {
     SshAgentProto(#[source] ssh_agent_lib::proto::error::ProtoError),
     #[error("Unspported key type: {0}")]
     UnsupportedKey(String),
+
+    #[error("{0}")]
+    OtherError(#[from] BuisnessLogicError),
 }
 
 impl BwSshAgent {
     fn handle_with_err(&self, message: Message) -> Result<Message, AgentError> {
-        let bw_ssh_keys = fetch_ssh_keys(&self.config, &self.master_password, &self.login)
+        let bw_ssh_keys = fetch_ssh_keys(&self.config, &self.master_password, &self.login)?
             .into_iter()
             .filter_map(|key| match key.key.public_key().to_bytes() {
                 Ok(blob) => {
