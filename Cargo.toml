@@ -14,13 +14,9 @@ rpassword = "7.0"
 uuid = { version = "1.2", features = ["v4"] }
 
 # Crypto
-sha2 = "0.10"
-hmac = "0.12"
-hkdf = "0.12"
-base64 = "0.13"
+rand = { version = "0.8", features = ["getrandom"] }
+ring = "0.16"
 openssl = "0.10"
-bytes = "1.2"
-byteorder = "1.4"
 ssh-key = { version = "0.5", features = ["rsa", "encryption", "alloc"] }
 ssh-agent-lib = "0.2"
 ctap-hid-fido2 = "3.4"

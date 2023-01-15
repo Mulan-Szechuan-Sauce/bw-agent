@@ -1,6 +1,7 @@
 use std::{collections::HashMap, str::FromStr};
 
 use clap::Parser;
+use openssl::base64;
 use ssh_agent_lib::Agent;
 use ssh_key::PrivateKey;
 
@@ -15,6 +16,8 @@ use ssh_agent::BwSshAgent;
 mod crypto;
 use crypto::{EncryptedThruple, MasterKey};
 
+use crate::crypto::encrypt_text;
+
 #[derive(Debug)]
 struct BwSshKeyEntry {
     key: PrivateKey,
@@ -24,7 +27,7 @@ struct BwSshKeyEntry {
 
 fn oath_login(config: &Config) -> BwLoginResponse {
     let client = reqwest::blocking::Client::builder()
-        .danger_accept_invalid_certs(config.ignore_untrusted_cert)
+        .danger_accept_invalid_certs(config.ignore_untrusted_cert.unwrap_or(false))
         .build()
         .unwrap();
 
@@ -58,7 +61,7 @@ pub enum BuisnessLogicError {
     #[error(
         "There was an error parsing {0} as symetrically encrypted aes_256_cbc cyphertext: {1}"
     )]
-    ThrupleFromStr(String, #[source] base64::DecodeError),
+    ThrupleFromStr(String, #[source] openssl::error::ErrorStack),
 }
 
 fn fetch_ssh_keys(
@@ -67,7 +70,7 @@ fn fetch_ssh_keys(
     login_response: &BwLoginResponse,
 ) -> Result<Vec<BwSshKeyEntry>, BuisnessLogicError> {
     let client = reqwest::blocking::Client::builder()
-        .danger_accept_invalid_certs(config.ignore_untrusted_cert)
+        .danger_accept_invalid_certs(config.ignore_untrusted_cert.unwrap_or(false))
         .build()
         .unwrap();
 
@@ -172,7 +175,7 @@ fn extract_field(
 
 fn password_login(config: &Config, master_password: &str) -> BwLoginResponse {
     let client = reqwest::blocking::Client::builder()
-        .danger_accept_invalid_certs(config.ignore_untrusted_cert)
+        .danger_accept_invalid_certs(config.ignore_untrusted_cert.unwrap_or(false))
         .build()
         .unwrap();
 
@@ -197,7 +200,7 @@ fn password_login(config: &Config, master_password: &str) -> BwLoginResponse {
         .pbkdf2_hmac_sha256::<32>(master_password.as_bytes())
         .expect("Failed to hash user master password");
 
-    let encoded = base64::encode(hashed);
+    let encoded = base64::encode_block(&hashed);
 
     let device_uuid = Uuid::new_v4().to_string();
     let mut params = HashMap::from([
@@ -258,37 +261,52 @@ fn password_login(config: &Config, master_password: &str) -> BwLoginResponse {
 fn main() {
     let args = Args::parse();
 
-    let config_str = std::fs::read_to_string(args.config).expect("Unable to read config file");
-    let config = serde_yaml::from_str::<Config>(&config_str).expect("Invalid yaml");
-
-    if let Some(level) = config.log_level {
-        env_logger::Builder::new().filter_level(level).init();
-    } else {
-        env_logger::init();
-    }
-
     let master_password = rpassword::prompt_password("Master Password: ").unwrap();
-    let login = if config.oauth_client_id.is_some() {
-        oath_login(&config)
-    } else {
-        password_login(&config, &master_password)
+
+    match args.action {
+        Command::Encrypt => {
+            let mut config = Config::read_config(&args.config);
+            config.oauth_client_id = config
+                .oauth_client_id
+                .map(|id| encrypt_text(&config.email, &master_password, &id).expect("Poo"));
+            config.oauth_client_secret = config
+                .oauth_client_secret
+                .map(|secret| encrypt_text(&config.email, &master_password, &secret).expect("Pee"));
+
+            println!("{}", serde_yaml::to_string(&config).unwrap());
+        }
+        Command::Run => {
+            let config = Config::decrypt_config(&args.config, &master_password);
+
+            if let Some(level) = config.log_level {
+                env_logger::Builder::new().filter_level(level).init();
+            } else {
+                env_logger::init();
+            }
+
+            let login = if config.oauth_client_id.is_some() {
+                oath_login(&config)
+            } else {
+                password_login(&config, &master_password)
+            };
+
+            let agent = BwSshAgent {
+                config,
+                master_password,
+                login,
+            };
+
+            let mut path = std::env::current_dir().expect("Not in a working directory");
+            path.push("connect.sock");
+            let _ = std::fs::remove_file(path.clone());
+
+            println!(
+                "SSH_AUTH_SOCK={}; export SSH_AUTH_SOCK;",
+                path.to_str().expect("Path is not valid utf8")
+            );
+
+            log::info!("Starting socket");
+            agent.run_unix(path).expect("Failed to run socket");
+        }
     };
-
-    let agent = BwSshAgent {
-        config,
-        master_password,
-        login,
-    };
-
-    let mut path = std::env::current_dir().expect("Not in a working directory");
-    path.push("connect.sock");
-    let _ = std::fs::remove_file(path.clone());
-
-    println!(
-        "SSH_AUTH_SOCK={}; export SSH_AUTH_SOCK;",
-        path.to_str().expect("Path is not valid utf8")
-    );
-
-    log::info!("Starting socket");
-    agent.run_unix(path).expect("Failed to run socket");
 }

@@ -1,5 +1,5 @@
 mod args;
-pub use args::Args;
+pub use args::*;
 
 mod config;
 pub use config::*;
