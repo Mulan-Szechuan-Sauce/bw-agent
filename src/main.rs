@@ -16,8 +16,6 @@ use ssh_agent::BwSshAgent;
 mod crypto;
 use crypto::{EncryptedThruple, MasterKey};
 
-use crate::crypto::encrypt_text;
-
 #[derive(Debug)]
 struct BwSshKeyEntry {
     key: PrivateKey,
@@ -25,21 +23,20 @@ struct BwSshKeyEntry {
     name: String,
 }
 
-fn oath_login(config: &Config) -> BwLoginResponse {
+fn oath_login(config: &Config, master_password: &str) -> BwLoginResponse {
     let client = reqwest::blocking::Client::builder()
         .danger_accept_invalid_certs(config.ignore_untrusted_cert.unwrap_or(false))
         .build()
         .unwrap();
 
     let device_uuid = Uuid::new_v4().to_string();
+    let client_id = config.oauth_client_id(master_password).unwrap();
+    let client_secret = config.oauth_client_secret(master_password).unwrap();
     let params = HashMap::from([
         ("grant_type", "client_credentials"),
         ("scope", "api"),
-        ("client_id", config.oauth_client_id.as_ref().unwrap()),
-        (
-            "client_secret",
-            config.oauth_client_secret.as_ref().unwrap(),
-        ),
+        ("client_id", &client_id),
+        ("client_secret", &client_secret),
         ("device_identifier", &device_uuid),
         ("device_name", &device_uuid),
     ]);
@@ -260,23 +257,17 @@ fn password_login(config: &Config, master_password: &str) -> BwLoginResponse {
 
 fn main() {
     let args = Args::parse();
+    let config = Config::read_config(&args.config);
 
     let master_password = rpassword::prompt_password("Master Password: ").unwrap();
 
     match args.action {
         Command::Encrypt => {
-            let mut config = Config::read_config(&args.config);
-            config.oauth_client_id = config
-                .oauth_client_id
-                .map(|id| encrypt_text(&config.email, &master_password, &id).expect("Poo"));
-            config.oauth_client_secret = config
-                .oauth_client_secret
-                .map(|secret| encrypt_text(&config.email, &master_password, &secret).expect("Pee"));
+            let new_config = config.encrypt_fields(&master_password);
 
-            println!("{}", serde_yaml::to_string(&config).unwrap());
+            println!("{}", serde_yaml::to_string(&new_config).unwrap());
         }
         Command::Run => {
-            let config = Config::decrypt_config(&args.config, &master_password);
 
             if let Some(level) = config.log_level {
                 env_logger::Builder::new().filter_level(level).init();
@@ -284,8 +275,8 @@ fn main() {
                 env_logger::init();
             }
 
-            let login = if config.oauth_client_id.is_some() {
-                oath_login(&config)
+            let login = if config.oauth_client_id(&master_password).is_some() {
+                oath_login(&config, &master_password)
             } else {
                 password_login(&config, &master_password)
             };

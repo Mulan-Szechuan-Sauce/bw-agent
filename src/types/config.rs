@@ -3,7 +3,7 @@ use std::str::FromStr;
 use log::LevelFilter;
 use serde::{Deserialize, Serialize};
 
-use crate::crypto::{EncryptedThruple, MasterKey};
+use crate::{crypto::{encrypt_text, EncryptedThruple, MasterKey}, BuisnessLogicError};
 
 // TODO: Maybe don't copy pasta the skip serialization somehow
 #[derive(Serialize, Deserialize, Debug)]
@@ -12,9 +12,9 @@ pub struct Config {
     pub email: String,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub oauth_client_id: Option<String>,
+    oauth_client_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub oauth_client_secret: Option<String>,
+    oauth_client_secret: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ignore_untrusted_cert: Option<bool>,
@@ -28,29 +28,44 @@ impl Config {
         serde_yaml::from_str::<Config>(&config_str).expect("Invalid yaml")
     }
 
-    pub fn decrypt_config(file: &str, master_password: &str) -> Self {
-        let mut config = Self::read_config(file);
-
-        let master_key = MasterKey::new(config.email.as_bytes(), master_password.as_bytes(), 100_000);
+    fn decrypt(&self, master_password: &str, text: &str) -> Result<String, BuisnessLogicError> {
+        let master_key = MasterKey::new(self.email.as_bytes(), master_password.as_bytes(), 100_000);
         let (enc_key, mac_key) = master_key.expand();
 
-        let make_thruple = |s: String| {
-            let e = EncryptedThruple::from_str(&s).ok()?;
-            e.mac_verify(&mac_key);
-            Some(e)
-        };
+        let e = EncryptedThruple::from_str(text)
+            .map_err(|e| BuisnessLogicError::ThrupleFromStr("config file decryption field".to_owned(), e))?;
+        e.mac_verify(&mac_key);
 
-        let client_id = config.oauth_client_id.and_then(make_thruple);
-        let client_secret = config.oauth_client_secret.and_then(make_thruple);
+        Ok(std::str::from_utf8(&e.decrypt(&enc_key)).expect("Invalid UTF8 in config file").to_owned())
+    }
 
-        let decrypt_to_str = |e: EncryptedThruple| std::str::from_utf8(&e.decrypt(&enc_key)).unwrap().to_owned();
+    pub fn encrypt_fields(self, master_password: &str) -> Self {
+        let oauth_client_id = self
+            .oauth_client_id
+            .as_ref()
+            .map(|text| encrypt_text(&self.email, master_password, text).expect("Pee"));
 
-        let id = client_id.map(decrypt_to_str);
-        let secret = client_secret.map(decrypt_to_str);
+        let oauth_client_secret = self
+            .oauth_client_secret
+            .as_ref()
+            .map(|text| encrypt_text(&self.email, master_password, text).expect("Pee"));
 
-        config.oauth_client_id = id;
-        config.oauth_client_secret = secret;
+        Config {
+            oauth_client_id,
+            oauth_client_secret,
+            ..self
+        }
+    }
 
-        config
+    pub fn oauth_client_id(&self, master_password: &str) -> Option<String> {
+        self.oauth_client_id
+            .as_ref()
+            .and_then(|id| self.decrypt(master_password, id).ok())
+    }
+
+    pub fn oauth_client_secret(&self, master_password: &str) -> Option<String> {
+        self.oauth_client_secret
+            .as_ref()
+            .and_then(|secret| self.decrypt(master_password, secret).ok())
     }
 }
