@@ -11,6 +11,7 @@ pub struct Config {
     pub url: String,
     pub email: String,
 
+    // Private encrypted fields
     #[serde(skip_serializing_if = "Option::is_none")]
     oauth_client_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -20,6 +21,8 @@ pub struct Config {
     pub ignore_untrusted_cert: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub log_level: Option<LevelFilter>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub socket_path: Option<String>,
 }
 
 impl Config {

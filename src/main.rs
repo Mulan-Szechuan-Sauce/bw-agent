@@ -1,4 +1,4 @@
-use std::{collections::HashMap, str::FromStr};
+use std::{collections::HashMap, path::Path, str::FromStr};
 
 use clap::Parser;
 use openssl::base64;
@@ -284,14 +284,12 @@ fn main() {
                 password_login(&config, &master_password)
             };
 
-            let agent = BwSshAgent {
-                config,
-                master_password,
-                login,
-            };
+            let path = config
+                .socket_path
+                .clone()
+                .unwrap_or("/tmp/bw-ssh-agent.sock".to_owned());
+            let path = Path::new(&path);
 
-            let mut path = std::env::current_dir().expect("Not in a working directory");
-            path.push("connect.sock");
             let _ = std::fs::remove_file(path.clone());
 
             println!(
@@ -300,6 +298,11 @@ fn main() {
             );
 
             log::info!("Starting socket");
+            let agent = BwSshAgent {
+                config,
+                master_password,
+                login,
+            };
             agent.run_unix(path).expect("Failed to run socket");
         }
     };

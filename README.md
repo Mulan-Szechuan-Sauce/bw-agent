@@ -16,7 +16,7 @@ off the oauth client id and secret.
 3. Launch `bw-agent` (you may specify `--config <path>` if you've placed it in another location)
 4. Authenticate using your bitwarden master password
 5. Copy and paste the `SSH_AUTH_SOCK` command outputted and execute it.
-  - You may also place this in your shell for convienenc in the future.
+  - You may also place this in your shell for convenience in the future.
 
 ## TODOs
 - [X] Implement basic Bitwarden Client to pull Secure Notes
