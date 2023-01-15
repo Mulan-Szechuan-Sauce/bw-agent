@@ -7,7 +7,7 @@ pub struct Args {
     pub action: Command,
 
     #[clap(long, short)]
-    pub config: String,
+    pub config: Option<String>,
 }
 
 #[derive(clap::Subcommand)]

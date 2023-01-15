@@ -257,7 +257,11 @@ fn password_login(config: &Config, master_password: &str) -> BwLoginResponse {
 
 fn main() {
     let args = Args::parse();
-    let config = Config::read_config(&args.config);
+    let config = Config::read_config(
+        &args
+            .config
+            .unwrap_or(format!("{}/.bw-agent.yaml", std::env::var("HOME").unwrap())),
+    );
 
     let master_password = rpassword::prompt_password("Master Password: ").unwrap();
 
@@ -268,7 +272,6 @@ fn main() {
             println!("{}", serde_yaml::to_string(&new_config).unwrap());
         }
         Command::Run => {
-
             if let Some(level) = config.log_level {
                 env_logger::Builder::new().filter_level(level).init();
             } else {
