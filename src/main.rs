@@ -1,7 +1,7 @@
-use std::{collections::HashMap, path::Path, str::FromStr};
+use std::{collections::HashMap, path::Path, str::FromStr, process::{Command, Stdio}, env, io::{Write, stdin, Read}};
 
 use clap::Parser;
-use openssl::base64;
+use openssl::{base64, hash::DigestBytes};
 use ssh_agent_lib::Agent;
 use ssh_key::PrivateKey;
 
@@ -135,9 +135,7 @@ fn fetch_ssh_keys(
             let name_cipher = EncryptedThruple::from_str(&cipher.name).ok()?;
             name_cipher.mac_verify(data_mac);
             let name_bytes = name_cipher.decrypt(data_key);
-            let name = std::str::from_utf8(&name_bytes)
-                .expect("Invalid UTF-8 entry name")
-                .to_owned();
+            let name = String::from_utf8_lossy(&name_bytes).into_owned();
 
             Some(BwSshKeyEntry {
                 key: PrivateKey::from_openssh(unencrypted_ssh_key)
@@ -260,18 +258,48 @@ fn main() {
     let config = Config::read_config(
         &args
             .config
-            .unwrap_or(format!("{}/.bw-agent.yaml", std::env::var("HOME").unwrap())),
+            .unwrap_or(format!("{}/.bw-agent.yaml", env::var("HOME").unwrap())),
     );
 
-    let master_password = rpassword::prompt_password("Master Password: ").unwrap();
-
     match args.action {
-        Command::Encrypt => {
+        ArgCommand::Encrypt => {
+            let master_password = rpassword::prompt_password("Master Password: ").unwrap();
             let new_config = config.encrypt_fields(&master_password);
 
             println!("{}", serde_yaml::to_string(&new_config).unwrap());
         }
-        Command::Run => {
+        ArgCommand::Run { foreground } if !foreground => {
+            let mut original_args = env::args().into_iter();
+            let program = original_args.next().unwrap();
+            let mut new_args = original_args.collect::<Vec<_>>();
+            new_args.push("-D".to_owned());
+
+            let master_password = rpassword::prompt_password("Master Password: ").unwrap();
+
+            let mut child = Command::new(program)
+                .args(new_args)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .spawn()
+                .unwrap();
+
+            let child_stdin = child.stdin.as_mut().unwrap();
+            child_stdin.write_all(master_password.as_bytes()).unwrap();
+            drop(child_stdin);
+
+            println!(
+                "SSH_AUTH_SOCK={}; export SSH_AUTH_SOCK;",
+                config.socket_path_or_default()
+            );
+            println!(
+                "SSH_AGENT_PID={}; export SSH_AGENT_PID;",
+                child.id(),
+            );
+        },
+        _ => {
+            let mut master_password = String::new();
+            stdin().read_line(&mut master_password).unwrap();
+
             if let Some(level) = config.log_level {
                 env_logger::Builder::new().filter_level(level).init();
             } else {
@@ -284,18 +312,10 @@ fn main() {
                 password_login(&config, &master_password)
             };
 
-            let path = config
-                .socket_path
-                .clone()
-                .unwrap_or("/tmp/bw-ssh-agent.sock".to_owned());
+            let path = config.socket_path_or_default();
             let path = Path::new(&path);
 
             let _ = std::fs::remove_file(path.clone());
-
-            println!(
-                "SSH_AUTH_SOCK={}; export SSH_AUTH_SOCK;",
-                path.to_str().expect("Path is not valid utf8")
-            );
 
             log::info!("Starting socket");
             let agent = BwSshAgent {

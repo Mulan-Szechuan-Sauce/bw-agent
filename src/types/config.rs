@@ -3,7 +3,10 @@ use std::str::FromStr;
 use log::LevelFilter;
 use serde::{Deserialize, Serialize};
 
-use crate::{crypto::{encrypt_text, EncryptedThruple, MasterKey}, BuisnessLogicError};
+use crate::{
+    crypto::{encrypt_text, EncryptedThruple, MasterKey},
+    BuisnessLogicError,
+};
 
 // TODO: Maybe don't copy pasta the skip serialization somehow
 #[derive(Serialize, Deserialize, Debug)]
@@ -35,11 +38,12 @@ impl Config {
         let master_key = MasterKey::new(self.email.as_bytes(), master_password.as_bytes(), 100_000);
         let (enc_key, mac_key) = master_key.expand();
 
-        let e = EncryptedThruple::from_str(text)
-            .map_err(|e| BuisnessLogicError::ThrupleFromStr("config file decryption field".to_owned(), e))?;
+        let e = EncryptedThruple::from_str(text).map_err(|e| {
+            BuisnessLogicError::ThrupleFromStr("config file decryption field".to_owned(), e)
+        })?;
         e.mac_verify(&mac_key);
 
-        Ok(std::str::from_utf8(&e.decrypt(&enc_key)).expect("Invalid UTF8 in config file").to_owned())
+        Ok(String::from_utf8_lossy(&e.decrypt(&enc_key)).into_owned())
     }
 
     pub fn encrypt_fields(self, master_password: &str) -> Self {
@@ -70,5 +74,11 @@ impl Config {
         self.oauth_client_secret
             .as_ref()
             .and_then(|secret| self.decrypt(master_password, secret).ok())
+    }
+
+    pub fn socket_path_or_default(&self) -> String {
+        self.socket_path
+            .clone()
+            .unwrap_or("/tmp/bw-ssh-agent.sock".to_owned())
     }
 }
