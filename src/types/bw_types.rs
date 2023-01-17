@@ -75,8 +75,8 @@ pub struct BwCipherData {
 pub struct BwCipherField {
     #[serde(rename = "Type")]
     t: BwFieldType,
-    pub name: String,
-    pub value: String,
+    pub name: Option<String>,
+    pub value: Option<String>,
 }
 
 // #[derive(Serialize, Deserialize, Debug)]

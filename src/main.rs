@@ -1,4 +1,11 @@
-use std::{collections::HashMap, path::Path, str::FromStr, process::{Command, Stdio}, env, io::{Write, stdin, Read}};
+use std::{
+    collections::HashMap,
+    env,
+    io::{stdin, Read, Write},
+    path::Path,
+    process::{Command, Stdio},
+    str::FromStr,
+};
 
 use clap::Parser;
 use openssl::{base64, hash::DigestBytes};
@@ -154,12 +161,12 @@ fn extract_field(
     field_name: &[u8],
 ) -> Option<Vec<u8>> {
     fields.iter().find_map(|field| {
-        let enc_name = EncryptedThruple::from_str(&field.name).ok()?;
+        let enc_name = EncryptedThruple::from_str(field.name.as_ref()?).ok()?;
         enc_name.mac_verify(data_mac);
         let name = enc_name.decrypt(data_key);
 
         if name == field_name {
-            let enc_value = EncryptedThruple::from_str(&field.value).ok()?;
+            let enc_value = EncryptedThruple::from_str(field.value.as_ref()?).ok()?;
             enc_value.mac_verify(data_mac);
             Some(enc_value.decrypt(data_key))
         } else {
@@ -291,11 +298,8 @@ fn main() {
                 "SSH_AUTH_SOCK={}; export SSH_AUTH_SOCK;",
                 config.socket_path_or_default()
             );
-            println!(
-                "SSH_AGENT_PID={}; export SSH_AGENT_PID;",
-                child.id(),
-            );
-        },
+            println!("SSH_AGENT_PID={}; export SSH_AGENT_PID;", child.id(),);
+        }
         _ => {
             let mut master_password = String::new();
             stdin().read_line(&mut master_password).unwrap();
