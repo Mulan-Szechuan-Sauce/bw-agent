@@ -1,14 +1,14 @@
 use std::{
     collections::HashMap,
     env,
-    io::{stdin, Read, Write},
+    io::{stdin, Write},
     path::Path,
     process::{Command, Stdio},
     str::FromStr,
 };
 
 use clap::Parser;
-use openssl::{base64, hash::DigestBytes};
+use openssl::base64;
 use ssh_agent_lib::Agent;
 use ssh_key::PrivateKey;
 
@@ -268,6 +268,12 @@ fn main() {
             .unwrap_or(format!("{}/.bw-agent.yaml", env::var("HOME").unwrap())),
     );
 
+    if let Some(level) = config.log_level {
+        env_logger::Builder::new().filter_level(level).init();
+    } else {
+        env_logger::init();
+    }
+
     match args.action {
         ArgCommand::Encrypt => {
             let master_password = rpassword::prompt_password("Master Password: ").unwrap();
@@ -283,6 +289,12 @@ fn main() {
 
             let master_password = rpassword::prompt_password("Master Password: ").unwrap();
 
+            let login = if config.oauth_client_id(&master_password).is_some() {
+                oath_login(&config, &master_password)
+            } else {
+                password_login(&config, &master_password)
+            };
+
             let mut child = Command::new(program)
                 .args(new_args)
                 .stdin(Stdio::piped())
@@ -291,7 +303,7 @@ fn main() {
                 .unwrap();
 
             let child_stdin = child.stdin.as_mut().unwrap();
-            child_stdin.write_all(master_password.as_bytes()).unwrap();
+            child_stdin.write_fmt(format_args!("{}\n{}", master_password, serde_json::to_string(&login).unwrap())).unwrap();
             drop(child_stdin);
 
             println!(
@@ -301,20 +313,15 @@ fn main() {
             println!("SSH_AGENT_PID={}; export SSH_AGENT_PID;", child.id(),);
         }
         _ => {
-            let mut master_password = String::new();
-            stdin().read_line(&mut master_password).unwrap();
+            let mut master_password_raw = String::new();
+            let mut login = String::new();
+            let stdin = stdin();
+            stdin.read_line(&mut master_password_raw).unwrap();
+            stdin.read_line(&mut login).unwrap();
+            drop(stdin);
 
-            if let Some(level) = config.log_level {
-                env_logger::Builder::new().filter_level(level).init();
-            } else {
-                env_logger::init();
-            }
-
-            let login = if config.oauth_client_id(&master_password).is_some() {
-                oath_login(&config, &master_password)
-            } else {
-                password_login(&config, &master_password)
-            };
+            let master_password = master_password_raw.trim().to_owned();
+            let login = serde_json::from_str(&login).unwrap();
 
             let path = config.socket_path_or_default();
             let path = Path::new(&path);

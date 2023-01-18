@@ -1,6 +1,11 @@
 use std::str::FromStr;
 
-use openssl::{hash::MessageDigest, symm::{Cipher, self}, pkcs5, base64};
+use openssl::{
+    base64,
+    hash::MessageDigest,
+    pkcs5,
+    symm::{self, Cipher},
+};
 use rand::{rngs::OsRng, RngCore};
 
 pub struct MasterKey([u8; 32]);
@@ -44,6 +49,7 @@ impl MasterKey {
     }
 }
 
+#[derive(Debug)]
 pub struct EncryptedThruple {
     init_vec: Vec<u8>,
     cypher_text: Vec<u8>,
@@ -92,9 +98,8 @@ pub fn encrypt_text(email: &str, master_password: &str, text: &str) -> Result<St
     let mut iv = [0u8; 16];
     OsRng.fill_bytes(&mut iv);
 
-    let encrypted =
-        symm::encrypt(Cipher::aes_256_cbc(), &enc_key, Some(&iv), text.as_bytes())
-            .expect("Blah blah blah");
+    let encrypted = symm::encrypt(Cipher::aes_256_cbc(), &enc_key, Some(&iv), text.as_bytes())
+        .expect("Blah blah blah");
 
     let hmac_tag = ring::hmac::sign(
         &ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &mac_key),
