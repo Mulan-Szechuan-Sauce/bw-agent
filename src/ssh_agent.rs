@@ -9,13 +9,12 @@ use ssh_agent_lib::proto::{Identity, Signature};
 use ssh_key::private::RsaKeypair;
 use thiserror::Error;
 
-use crate::types::{BwLoginResponse, Config};
-use crate::{fetch_ssh_keys, BuisnessLogicError, BwSshKeyEntry};
+use crate::types::Config;
+use crate::{BuisnessLogicError, BwSshKeyEntry};
 
 pub struct BwSshAgent {
     pub config: Config,
-    pub master_password: String,
-    pub login: BwLoginResponse,
+    pub ssh_keys: Vec<(BwSshKeyEntry, Identity)>,
 }
 
 #[derive(Error, Debug)]
@@ -37,35 +36,15 @@ pub enum AgentError {
 
 impl BwSshAgent {
     fn handle_with_err(&self, message: Message) -> Result<Message, AgentError> {
-        let bw_ssh_keys = fetch_ssh_keys(&self.config, &self.master_password, &self.login)?
-            .into_iter()
-            .filter_map(|key| match key.key.public_key().to_bytes() {
-                Ok(blob) => {
-                    let comment = key.name.clone();
-                    Some((
-                        key,
-                        Identity {
-                            pubkey_blob: blob,
-                            comment,
-                        },
-                    ))
-                }
-                Err(e) => {
-                    log::warn!("Key '{}' public key could not be loaded", e);
-                    None
-                }
-            })
-            .collect::<Vec<(BwSshKeyEntry, Identity)>>();
-
         match message {
             Message::RequestIdentities => Ok(Message::IdentitiesAnswer(
-                bw_ssh_keys
+                self.ssh_keys
                     .iter()
                     .map(|(_, identity)| identity.to_owned())
                     .collect(),
             )),
             Message::SignRequest(request) => {
-                let key_identity = bw_ssh_keys
+                let key_identity = self.ssh_keys
                     .iter()
                     .find(|(_, identity)| identity.pubkey_blob == request.pubkey_blob);
 

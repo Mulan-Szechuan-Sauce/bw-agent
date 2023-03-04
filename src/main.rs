@@ -4,7 +4,7 @@ use std::{
     io::{stdin, Write},
     path::Path,
     process::{Command, Stdio},
-    str::FromStr,
+    str::FromStr, fs,
 };
 
 use clap::Parser;
@@ -24,11 +24,21 @@ mod crypto;
 use crypto::{EncryptedThruple, MasterKey};
 
 #[derive(Debug)]
-struct BwSshKeyEntry {
+pub struct BwSshKeyEntry {
     key: PrivateKey,
     passphrase: Option<Vec<u8>>,
     name: String,
 }
+
+// TODO: Rename me something saner
+#[derive(Error, Debug)]
+pub enum BuisnessLogicError {
+    #[error(
+        "There was an error parsing {0} as symetrically encrypted aes_256_cbc cyphertext: {1}"
+    )]
+    ThrupleFromStr(String, #[source] openssl::error::ErrorStack),
+}
+
 
 fn oath_login(config: &Config, master_password: &str) -> BwLoginResponse {
     let client = reqwest::blocking::Client::builder()
@@ -57,15 +67,6 @@ fn oath_login(config: &Config, master_password: &str) -> BwLoginResponse {
     response
         .json::<BwLoginResponse>()
         .expect("Login json failed to deserialize")
-}
-
-// TODO: Rename me something saner
-#[derive(Error, Debug)]
-pub enum BuisnessLogicError {
-    #[error(
-        "There was an error parsing {0} as symetrically encrypted aes_256_cbc cyphertext: {1}"
-    )]
-    ThrupleFromStr(String, #[source] openssl::error::ErrorStack),
 }
 
 fn fetch_ssh_keys(
@@ -102,9 +103,13 @@ fn fetch_ssh_keys(
         .send()
         .expect("Sync request failed");
 
-    let sync_response = response
-        .json::<BwSyncResponse>()
-        .expect("Sync json failed to deserialize");
+    let sync_response_text = response.text().expect("Sync failed to read text");
+
+    let sync_response = serde_json::from_str::<BwSyncResponse>(&sync_response_text)
+        .unwrap_or_else(|_| {
+            log::error!("Sync json failed to deserialize. Received response: {}", sync_response_text);
+            panic!("Sync json failed to deserialize");
+        });
 
     let folder_id = sync_response
         .folders
@@ -262,10 +267,11 @@ fn password_login(config: &Config, master_password: &str) -> BwLoginResponse {
 
 fn main() {
     let args = Args::parse();
+    let home_dir = env::var("HOME").unwrap();
     let config = Config::read_config(
         &args
             .config
-            .unwrap_or(format!("{}/.bw-agent.yaml", env::var("HOME").unwrap())),
+            .unwrap_or(format!("{home_dir}/.bw-agent.yaml")),
     );
 
     if let Some(level) = config.log_level {
@@ -282,7 +288,7 @@ fn main() {
             println!("{}", serde_yaml::to_string(&new_config).unwrap());
         }
         ArgCommand::Run { foreground } if !foreground => {
-            let mut original_args = env::args().into_iter();
+            let mut original_args = env::args();
             let program = original_args.next().unwrap();
             let mut new_args = original_args.collect::<Vec<_>>();
             new_args.push("-D".to_owned());
@@ -295,16 +301,22 @@ fn main() {
                 password_login(&config, &master_password)
             };
 
+            let log_file = fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(format!("{home_dir}/.bw-agent.log"))
+                .expect("Unable to open log file");
+
             let mut child = Command::new(program)
                 .args(new_args)
                 .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
+                .stdout(log_file.try_clone().unwrap())
+                .stderr(log_file)
                 .spawn()
                 .unwrap();
 
             let child_stdin = child.stdin.as_mut().unwrap();
             child_stdin.write_fmt(format_args!("{}\n{}", master_password, serde_json::to_string(&login).unwrap())).unwrap();
-            drop(child_stdin);
 
             println!(
                 "SSH_AUTH_SOCK={}; export SSH_AUTH_SOCK;",
@@ -318,7 +330,6 @@ fn main() {
             let stdin = stdin();
             stdin.read_line(&mut master_password_raw).unwrap();
             stdin.read_line(&mut login).unwrap();
-            drop(stdin);
 
             let master_password = master_password_raw.trim().to_owned();
             let login = serde_json::from_str(&login).unwrap();
@@ -326,13 +337,39 @@ fn main() {
             let path = config.socket_path_or_default();
             let path = Path::new(&path);
 
-            let _ = std::fs::remove_file(path.clone());
+            let _ = std::fs::remove_file(path);
+
+
+            let bw_ssh_keys = fetch_ssh_keys(&config, &master_password, &login)
+                .expect("Unable to fetch ssh keys")
+                .into_iter()
+                .filter_map(|key| match key.key.public_key().to_bytes() {
+                    Ok(blob) => {
+                        let comment = key.name.clone();
+                        Some((
+                                key,
+                                ssh_agent_lib::proto::Identity {
+                                    pubkey_blob: blob,
+                                    comment,
+                                },
+                                ))
+                    }
+                    Err(e) => {
+                        log::warn!("Key '{}' public key could not be loaded", e);
+                        None
+                    }
+                })
+            .collect::<Vec<(BwSshKeyEntry, ssh_agent_lib::proto::Identity)>>();
+
+            /* TODO: This should probably actually make sure the memory is zeroed out rather than
+             * just dropped */
+            drop(master_password_raw);
+            drop(master_password);
 
             log::info!("Starting socket");
             let agent = BwSshAgent {
                 config,
-                master_password,
-                login,
+                ssh_keys: bw_ssh_keys,
             };
             agent.run_unix(path).expect("Failed to run socket");
         }
