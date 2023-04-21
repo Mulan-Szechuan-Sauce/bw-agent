@@ -10,6 +10,9 @@ jobs:
     steps:
       - uses: actions/checkout@v2
 
+      - name: Install Ubuntu deps
+        run: sudo apt update -y && sudo apt install -y libudev-dev
+
       - name: Install toolchain
         uses: actions-rs/toolchain@v1
         with:
