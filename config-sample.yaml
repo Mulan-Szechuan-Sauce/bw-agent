@@ -1,0 +1,8 @@
+url: https://<your_bw/vw_url>
+email: <your_bw/vw_account_email>
+oauth_client_id: <your_client_id>
+oauth_client_secret: <your_client_secret>
+## additional optional config fields ##
+# ignore_untrusted_cert: false
+# log_level: error
+# socket_path: /tmp/my-special-socket.sock

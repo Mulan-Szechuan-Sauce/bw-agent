@@ -1,7 +1,7 @@
-use std::{collections::HashMap, fmt::Display};
+use std::collections::HashMap;
 
-use serde::{Serialize, Deserialize};
-use serde_repr::{Serialize_repr, Deserialize_repr};
+use serde::{Deserialize, Serialize};
+use serde_repr::{Deserialize_repr, Serialize_repr};
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct BwLoginResponse {
@@ -75,8 +75,8 @@ pub struct BwCipherData {
 pub struct BwCipherField {
     #[serde(rename = "Type")]
     t: BwFieldType,
-    pub name: String,
-    pub value: String,
+    pub name: Option<String>,
+    pub value: Option<String>,
 }
 
 // #[derive(Serialize, Deserialize, Debug)]

@@ -10,14 +10,31 @@ jobs:
     steps:
       - uses: actions/checkout@v2
 
-      - name: Install stable toolchain
+      - name: Install toolchain
         uses: actions-rs/toolchain@v1
         with:
           profile: minimal
-          toolchain: stable
+          toolchain: nightly
+
+      - name: Set nightly toolchain
+        run: rustup default nightly
 
       - name: Run tests
         run: cargo t
 
       - name: Build release
         run: cargo build --release
+
+      - name: Rename binary
+        run: mv ./target/release/bw-agent bw-agent-x86_64-linux
+
+      - name: Define pre-release name
+        id: vars
+        run: echo "::set-output name=sha_short::$(git rev-parse --short HEAD)"
+
+      - name: Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: bw-agent-x86_64-linux
+          prerelease: true
+          tag_name: ${{ steps.vars.outputs.sha_short }}
