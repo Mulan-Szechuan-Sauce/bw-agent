@@ -8,6 +8,7 @@ use std::{
 };
 
 use clap::Parser;
+use log::info;
 use openssl::base64;
 use ssh_agent_lib::Agent;
 use ssh_key::PrivateKey;
@@ -56,6 +57,9 @@ fn oath_login(config: &Config, master_password: &str) -> BwLoginResponse {
         ("client_secret", &client_secret),
         ("device_identifier", &device_uuid),
         ("device_name", &device_uuid),
+        // https://github.com/bitwarden/server/blob/master/src/Core/Enums/DeviceType.cs
+        // Corresponds to SDK
+        ("device_type", "21"),
     ]);
 
     let response = client
