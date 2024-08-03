@@ -24,10 +24,12 @@ pub struct BwLoginResponse {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 pub struct BwPreloginResponse {
     pub kdf: u32,
     pub kdf_iterations: usize,
+    pub kdf_memory: Option<u32>,
+    pub kdf_parallelism: Option<u32>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
