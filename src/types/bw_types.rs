@@ -51,7 +51,7 @@ pub enum BwCipherType {
 #[serde(rename_all = "PascalCase")]
 pub struct BwCipher {
     #[serde(rename = "Type")]
-    pub t: BwCipherType,
+    pub type_: BwCipherType,
     // pub login: Option<BwLogin>,
     pub notes: Option<String>,
     pub data: BwCipherData,

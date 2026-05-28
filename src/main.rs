@@ -134,7 +134,7 @@ fn fetch_ssh_keys(
         .ciphers
         .into_iter()
         .filter_map(|cipher| {
-            let cipher = match (&cipher.t, &cipher.folder_id) {
+            let cipher = match (&cipher.type_, &cipher.folder_id) {
                 (BwCipherType::Note, Some(fid)) if *fid == folder_id => Some(cipher),
                 _ => None,
             }?;
